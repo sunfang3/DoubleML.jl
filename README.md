@@ -109,10 +109,15 @@ model.confint()                →    confint(model)
 | **CVaR / CVaR-TE** | Conditional value at risk of potential outcomes (`score="CVaR"`) | ✅ |
 | **APO / APOS** | Average potential outcomes + causal contrasts | ✅ |
 | **DID** | Two-period ATT (`observational` / `experimental`) | ✅ |
-| **DID multi (CS)** | Callaway–Sant’Anna toolbox: never/not-yet, anticipation, aggregate group/time/eventstudy | ✅ |
+| **DID multi (CS)** | Callaway–Sant’Anna: never/not-yet, anticipation, aggregate group/time/eventstudy, unit-IF joint SE, bootstrap, `p_adjust` | ✅ |
+| **DIDCS** | Repeated cross-section two-period DiD (`observational` / `experimental`) | ✅ |
 | **LPLR** | Logistic partially linear (binary Y) | ✅ |
+| **PLPR** | Partially linear panel regression (`fd_exact` first-difference) | ✅ |
 | **SSM** | Sample selection (`missing-at-random` / basic `nonignorable`) | ✅ |
 | **RDD** | Sharp/fuzzy RD with ML residualization + local linear | ✅ |
+| **Cluster SE** | One-way cluster-robust SE (`cluster_se` / `apply_cluster_se!`) | ✅ |
+| **Multiple testing** | `p_adjust` Holm / Bonferroni / Romano–Wolf | ✅ |
+| **IRM weights** | Observation weights for IRM ATE/ATTE | ✅ |
 
 ## Built-in learners
 
@@ -163,10 +168,13 @@ DoubleML/
 │   ├── qte.jl           # QTE / LQTE / CVaR-TE
 │   ├── apo.jl           # APO / APOS
 │   ├── did.jl           # two-period DiD
-│   ├── did_multi.jl     # staggered DiD multi
+│   ├── did_cs.jl        # repeated cross-section DiD
+│   ├── did_multi.jl     # staggered DiD multi (CS toolbox)
 │   ├── lplr.jl          # logistic PLR
+│   ├── plpr.jl          # panel PLR (first-difference)
 │   ├── ssm.jl           # sample selection
 │   ├── rdd.jl           # regression discontinuity
+│   ├── cluster.jl       # one-way cluster SE
 │   └── datasets.jl
 ├── test/runtests.jl
 ├── examples/plr_irm_demo.jl
@@ -307,8 +315,26 @@ cs = DoubleMLDIDMulti(
 )
 fit!(cs)
 att_table(cs)                        # g, t_pre, t_eval, event_time, coef, se
-aggregate(cs, :group)                # also :time, :eventstudy
+aggregate(cs, :group)                # also :time, :eventstudy (unit-IF joint SE)
 summary_table(aggregate(cs, :eventstudy))
+bootstrap!(cs; n_rep_boot=500)
+confint(cs; joint=true)
+p_adjust(cs; method=:romano_wolf)    # :holm, :bonferroni
+
+# Repeated cross-section DiD
+rcs = make_did_cs_data(n_obs=1000, theta=-2.0; seed=2)
+didcs = DoubleMLDIDCS(rcs, RidgeLearner(α=0.5), clf_m; score="observational")
+fit!(didcs)
+
+# Panel PLR (first-difference exact)
+panel_plpr = make_plpr_data(n_id=200, n_t=4, theta=0.5; seed=3)
+plpr = DoubleMLPLPR(panel_plpr, RidgeLearner(α=0.5), RidgeLearner(α=0.5))
+fit!(plpr)
+
+# Cluster-robust SE (any fitted model with psi stored)
+cluster = rand(1:50, n_obs(data))   # example cluster ids
+cluster_se(dml; cluster=cluster)
+apply_cluster_se!(dml; cluster=cluster)
 ```
 
 ## Run tests

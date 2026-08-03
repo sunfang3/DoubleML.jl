@@ -88,6 +88,66 @@ end
 # Convenience alias used like Python's `.summary` when unambiguous
 const dml_summary = summary_table
 
+"""
+    set_sample_splitting!(m, smpls)
+
+Set external sample splits (Python `set_sample_splitting`).
+`smpls` is a vector of length `n_rep`, each entry a vector of
+`(train=..., test=...)` fold named tuples covering `1:n`.
+"""
+function set_sample_splitting!(m::AbstractDoubleML, smpls)
+    hasproperty(m, :smpls) || error("Model does not support sample splitting")
+    length(smpls) == m.n_rep ||
+        throw(ArgumentError("smpls length $(length(smpls)) must equal n_rep=$(m.n_rep)"))
+    m.smpls = smpls
+    m.fitted = false
+    return m
+end
+
+"""
+    p_adjust(m; method=:holm) -> DataFrame
+
+Multiple-testing adjusted p-values for multi-parameter models.
+Methods: `:holm`, `:bonferroni`, `:romano_wolf` (needs `bootstrap!`).
+"""
+function p_adjust(m::AbstractDoubleML; method::Symbol=:holm)
+    m.fitted || error("Call fit! first")
+    raw = pval(m)
+    n = length(raw)
+    if method === :bonferroni
+        adj = min.(1.0, raw .* n)
+    elseif method === :holm
+        ord = sortperm(raw)
+        adj = similar(raw)
+        for (rank, i) in enumerate(ord)
+            adj[i] = min(1.0, raw[i] * (n - rank + 1))
+        end
+        for k in 2:n
+            adj[ord[k]] = max(adj[ord[k]], adj[ord[k - 1]])
+        end
+    elseif method === :romano_wolf
+        hasproperty(m, :boot) || error("bootstrap! required for Romano–Wolf")
+        m.boot === nothing && error("Apply bootstrap! before p_adjust(:romano_wolf)")
+        t0 = abs.(t_stat(m))
+        boot = abs.(m.boot.boot_t_stat)
+        boot_med = mapslices(median, boot; dims=3)[:, :, 1]
+        ord = sortperm(t0; rev=true)
+        adj = ones(n)
+        for (step, j) in enumerate(ord)
+            remain = ord[step:end]
+            max_boot = vec(maximum(boot_med[:, remain]; dims=2))
+            adj[j] = mean(max_boot .>= t0[j])
+        end
+        for step in 2:n
+            adj[ord[step]] = max(adj[ord[step]], adj[ord[step - 1]])
+        end
+    else
+        throw(ArgumentError("method must be :holm, :bonferroni, or :romano_wolf"))
+    end
+    return DataFrame(parameter=m.treat_names, pvalue=raw, pvalue_adjusted=adj,
+                     method=fill(String(method), n))
+end
+
 function Base.show(io::IO, m::AbstractDoubleML)
     name = string(typeof(m).name.name)
     if !m.fitted

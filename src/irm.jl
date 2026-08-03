@@ -14,6 +14,7 @@ mutable struct DoubleMLIRM <: AbstractDoubleML
     n_rep::Int
     score::String
     trimming_threshold::Float64
+    weights::Union{Nothing,Vector{Float64}}
     smpls::Vector
     coef::Vector{Float64}
     se::Vector{Float64}
@@ -35,21 +36,28 @@ function DoubleMLIRM(data::DoubleMLData, ml_g, ml_m;
                      n_rep::Int=1,
                      score::AbstractString="ATE",
                      trimming_threshold::Real=1e-12,
+                     weights::Union{Nothing,AbstractVector}=nothing,
                      draw_sample_splitting::Bool=true,
                      rng::AbstractRNG=Random.default_rng())
     score in ("ATE", "ATTE") ||
         throw(ArgumentError("score must be \"ATE\" or \"ATTE\""))
     Set(unique(data.d)) ⊆ Set([0.0, 1.0]) ||
         throw(ArgumentError("DoubleMLIRM requires binary treatment in {0,1}"))
+    n = n_obs(data)
+    w = if weights === nothing
+        nothing
+    else
+        length(weights) == n || throw(DimensionMismatch("weights length must equal n"))
+        Float64.(weights)
+    end
 
     smpls = draw_sample_splitting ?
-        make_repeated_folds(n_obs(data), n_folds, n_rep; rng=rng) :
+        make_repeated_folds(n, n_folds, n_rep; rng=rng) :
         Vector{Any}()
 
-    n = n_obs(data)
     return DoubleMLIRM(
         data, ml_g, ml_m, n_folds, n_rep, String(score),
-        Float64(trimming_threshold), smpls,
+        Float64(trimming_threshold), w, smpls,
         Float64[], Float64[],
         zeros(1, n_rep), zeros(1, n_rep),
         fill(NaN, n, n_rep, 1),
@@ -127,6 +135,12 @@ function fit!(m::DoubleMLIRM; store_predictions::Bool=true)
                  m̂ ./ p .* (1 .- d) ./ (1 .- m̂) .* (y .- g0)
             psi_a = fill(-1.0, n)
             psi_b = dr
+        end
+        # optional observation weights (normalized to mean 1)
+        if m.weights !== nothing
+            w = m.weights ./ mean(m.weights)
+            psi_a = psi_a .* w
+            psi_b = psi_b .* w
         end
 
         θ = est_coef_linear(psi_a, psi_b)

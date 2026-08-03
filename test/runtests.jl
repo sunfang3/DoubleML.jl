@@ -766,4 +766,105 @@ using Statistics
         @test rdd.se[1] > 0
         @test isfinite(rdd.h_used) && rdd.h_used > 0
     end
+
+    @testset "DID multi unit IF, bootstrap, p_adjust" begin
+        data = make_did_panel_data(n_id=200, n_t=4, dim_x=3, theta=2.0; seed=701)
+        multi = DoubleMLDIDMulti(
+            data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            n_folds=3, rng=MersenneTwister(701),
+        )
+        fit!(multi)
+        @test size(multi.if_units, 1) == length(unique(data.id))
+        @test size(multi.if_units, 3) == length(multi.coef)
+        # joint IF aggregation SE finite and positive
+        ag = aggregate(multi, :group)
+        @test all(ag.se .> 0)
+        @test ag.overall_se > 0
+        # multiplier bootstrap + joint CI + p_adjust
+        bootstrap!(multi; method="normal", n_rep_boot=100, rng=MersenneTwister(702))
+        ci_j = confint(multi; joint=true)
+        @test nrow(ci_j) == length(multi.coef)
+        @test all(ci_j.joint)
+        padj = p_adjust(multi; method=:holm)
+        @test all(padj.pvalue_adjusted .>= padj.pvalue .- 1e-12)
+        padj_rw = p_adjust(multi; method=:romano_wolf)
+        @test all(0 .<= padj_rw.pvalue_adjusted .<= 1)
+        padj_b = p_adjust(multi; method=:bonferroni)
+        @test all(padj_b.pvalue_adjusted .>= padj_b.pvalue .- 1e-12)
+    end
+
+    @testset "DIDCS repeated cross-section" begin
+        data = make_did_cs_data(n_obs=1200, dim_x=3, theta=-2.0; seed=711)
+        dcs = DoubleMLDIDCS(
+            data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            n_folds=3, score="observational", rng=MersenneTwister(711),
+        )
+        fit!(dcs)
+        @test isfinite(dcs.coef[1])
+        @test abs(dcs.coef[1] - (-2.0)) < 1.0
+        @test dcs.se[1] > 0
+        # experimental score
+        dcs2 = DoubleMLDIDCS(
+            data, RidgeLearner(α=0.5), nothing;
+            n_folds=3, score="experimental", rng=MersenneTwister(712),
+        )
+        fit!(dcs2)
+        @test isfinite(dcs2.coef[1])
+    end
+
+    @testset "Cluster SE" begin
+        data = make_plr_data(n_obs=600, dim_x=5, theta=0.5; seed=721)
+        dml = DoubleMLPLR(data, RidgeLearner(α=1.0), RidgeLearner(α=1.0);
+                          n_folds=3, rng=MersenneTwister(721))
+        fit!(dml)
+        # synthetic clusters (block of 10)
+        cluster = repeat(1:60, inner=10)
+        r = cluster_se(dml; cluster=cluster)
+        @test r.n_clusters == 60
+        @test r.se[1] > 0
+        @test isfinite(r.ci_lower[1])
+        se_iid = dml.se[1]
+        apply_cluster_se!(dml; cluster=cluster)
+        @test dml.se[1] ≈ r.se[1]
+        @test dml.se[1] > 0
+        # cluster SE typically ≥ iid SE with positive within-cluster correlation
+        @test dml.se[1] >= 0.5 * se_iid
+    end
+
+    @testset "PLPR first-difference" begin
+        data = make_plpr_data(n_id=180, n_t=4, dim_x=3, theta=0.5; seed=731)
+        plpr = DoubleMLPLPR(
+            data, RidgeLearner(α=0.5), RidgeLearner(α=0.5);
+            approach="fd_exact", n_folds=3, rng=MersenneTwister(731),
+        )
+        fit!(plpr)
+        @test isfinite(plpr.coef[1])
+        @test abs(plpr.coef[1] - 0.5) < 0.35
+        @test plpr.se[1] > 0
+        @test plpr.fd_data !== nothing
+    end
+
+    @testset "Base p_adjust and IRM weights" begin
+        data = make_pliv_data(n_obs=800, dim_x=4, dim_z=1, theta=0.5; seed=741)
+        # multi-coef via PLIV is single; use IRM + synthetic second model via p_adjust on multi DID already covered
+        irm_data = make_irm_data(n_obs=800, dim_x=4, theta=0.5; seed=742)
+        n = length(irm_data.y)
+        w = ones(n)
+        w[1:100] .= 1.5
+        irm = DoubleMLIRM(
+            irm_data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            n_folds=3, weights=w, rng=MersenneTwister(742),
+        )
+        fit!(irm)
+        @test isfinite(irm.coef[1])
+        # single-parameter p_adjust
+        pa = p_adjust(irm; method=:holm)
+        @test pa.pvalue_adjusted[1] ≈ pa.pvalue[1]
+        # set_sample_splitting!
+        smpls = DoubleML.make_repeated_folds(n, 3, 1; rng=MersenneTwister(743))
+        set_sample_splitting!(irm, smpls)
+        @test irm.fitted == false
+        fit!(irm)
+        @test irm.fitted
+    end
 end

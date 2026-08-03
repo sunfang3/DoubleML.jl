@@ -162,6 +162,54 @@ function make_did_data(; n_obs::Int=500, dim_x::Int=4, theta::Real=-2.0,
 end
 
 """
+    make_did_cs_data(; n_obs=1000, dim_x=4, theta=-2.0, seed=nothing) -> DoubleMLData
+
+Repeated cross-section two-period DiD DGP (Chang 2020 style).
+Each row is an independent unit observed at one time (`t ∈ {0,1}`).
+Binary group `d`, true ATT ≈ `theta`.
+"""
+function make_did_cs_data(; n_obs::Int=1000, dim_x::Int=4, theta::Real=-2.0,
+                         seed=nothing)
+    rng = seed === nothing ? Random.default_rng() : MersenneTwister(seed)
+    dim_x >= 1 || throw(ArgumentError("dim_x ≥ 1"))
+    X = randn(rng, n_obs, dim_x)
+    logits = 0.5 .* X[:, 1] .- 0.25 .* (dim_x >= 2 ? X[:, 2] : 0.0)
+    p = 1 ./ (1 .+ exp.(-logits))
+    d = Float64.(rand(rng, n_obs) .< p)
+    t = Float64.(rand(rng, n_obs) .< 0.5)  # 0 pre, 1 post
+    g0 = 2 .* X[:, 1] .+ (dim_x >= 2 ? X[:, 2] : 0.0)
+    # level outcomes with common trend + ATT for treated in post
+    y = g0 .+ 0.5 .* t .+ theta .* d .* t .+ randn(rng, n_obs)
+    return DoubleMLData(X, y, d; y_col="y", d_col="d", t=Int.(t))
+end
+
+"""
+    make_plpr_data(; n_id=200, n_t=4, dim_x=3, theta=0.5, seed=nothing) -> DoubleMLData
+
+Panel DGP for partially linear panel regression (first-difference).
+True slope on time-varying treatment ≈ `theta`.
+"""
+function make_plpr_data(; n_id::Int=200, n_t::Int=4, dim_x::Int=3,
+                       theta::Real=0.5, seed=nothing)
+    rng = seed === nothing ? Random.default_rng() : MersenneTwister(seed)
+    n_t >= 2 || throw(ArgumentError("n_t ≥ 2"))
+    id = Int[]; t = Int[]; d = Float64[]; y = Float64[]
+    Xs = Vector{Vector{Float64}}()
+    for i in 1:n_id
+        αi = randn(rng)
+        for tt in 1:n_t
+            xit = randn(rng, dim_x)
+            dit = 0.3 * xit[1] + randn(rng)
+            yi = αi + theta * dit + 0.5 * xit[1] + 0.2 * tt + randn(rng)
+            push!(Xs, xit)
+            push!(id, i); push!(t, tt); push!(d, dit); push!(y, yi)
+        end
+    end
+    X = reduce(vcat, (r' for r in Xs))
+    return DoubleMLData(X, y, d; y_col="y", d_col="d", id=id, t=t)
+end
+
+"""
     make_lplr_data(; n_obs=800, dim_x=15, alpha=0.5, seed=nothing) -> DoubleMLData
 
 Binary outcome logistic PLR DGP (Liu–Zhang–Zhou style). True slope ≈ `alpha`.

@@ -15,14 +15,18 @@ API-aligned with the Python package [DoubleML](https://docs.doubleml.org/).
 - [`DoubleMLQTE`](@ref) — QTE / LQTE / CVaR-TE (`score="PQ"|"LPQ"|"CVaR"`)
 - [`DoubleMLAPO`](@ref) / [`DoubleMLAPOS`](@ref) — average potential outcomes
 - [`DoubleMLDID`](@ref) — two-period difference-in-differences ATT
-- [`DoubleMLDIDMulti`](@ref) — staggered group–time ATTs (panel)
+- [`DoubleMLDIDCS`](@ref) — repeated cross-section DiD (two periods)
+- [`DoubleMLDIDMulti`](@ref) — staggered group–time ATTs (Callaway–Sant’Anna)
 - [`DoubleMLLPLR`](@ref) — logistic partially linear regression
+- [`DoubleMLPLPR`](@ref) — partially linear panel regression (first-difference)
 - [`DoubleMLSSM`](@ref) — sample selection model
 - [`DoubleMLRDD`](@ref) — regression discontinuity (sharp/fuzzy)
 
 # Inference
 - Pointwise: `confint(m)`
 - Joint (multiplier bootstrap): `bootstrap!(m)` then `confint(m; joint=true)`
+- Multiple testing: `p_adjust(m; method=:holm|:bonferroni|:romano_wolf)`
+- Cluster SE: `cluster_se` / `apply_cluster_se!`
 - Sensitivity (omitted confounders): `sensitivity_analysis!` (PLR / IRM)
 - Heterogeneous effects: `gate` / `cate` → [`DoubleMLBLP`](@ref) (PLR / IRM)
 - Policy learning: `policy_tree` → [`DoubleMLPolicyTree`](@ref) (IRM ATE)
@@ -76,12 +80,14 @@ export
     DoubleMLAPOS,
     causal_contrast,
     DoubleMLDID,
+    DoubleMLDIDCS,
     DoubleMLDIDMulti,
     DoubleMLPanelData,
     att_table,
     aggregate,
     DIDAggregation,
     DoubleMLLPLR,
+    DoubleMLPLPR,
     DoubleMLSSM,
     DoubleMLRDD,
     confint,
@@ -89,6 +95,10 @@ export
     dml_summary,
     bootstrap!,
     BootstrapResult,
+    p_adjust,
+    set_sample_splitting!,
+    cluster_se,
+    apply_cluster_se!,
     # tuning
     tune!,
     tune_learner,
@@ -118,7 +128,9 @@ export
     make_pliv_data,
     make_iivm_data,
     make_did_data,
+    make_did_cs_data,
     make_lplr_data,
+    make_plpr_data,
     make_ssm_data,
     make_did_panel_data,
     make_rdd_data
@@ -126,8 +138,9 @@ export
 include("learners.jl")
 include("data.jl")
 include("sample_splitting.jl")
-include("base.jl")       # AbstractDoubleML, confint, summary_table
+include("base.jl")       # AbstractDoubleML, confint, summary_table, p_adjust
 include("bootstrap.jl")  # BootstrapResult, bootstrap! (needs AbstractDoubleML)
+include("cluster.jl")    # one-way cluster SE
 include("sensitivity.jl")
 include("plr.jl")
 include("irm.jl")
@@ -141,8 +154,10 @@ include("cvar.jl")       # CVaR of potential outcomes
 include("qte.jl")        # QTE / LQTE / CVaR-TE
 include("apo.jl")        # APO / APOS
 include("did.jl")        # two-period DiD
-include("did_multi.jl")  # staggered DiD multi
+include("did_cs.jl")     # repeated cross-section DiD
+include("did_multi.jl")  # staggered DiD multi (+ unit IF bootstrap)
 include("lplr.jl")       # logistic PLR
+include("plpr.jl")       # panel PLR (first-difference)
 include("ssm.jl")        # sample selection
 include("rdd.jl")        # regression discontinuity
 include("tune.jl")

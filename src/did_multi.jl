@@ -166,6 +166,9 @@ mutable struct DoubleMLDIDMulti <: AbstractDoubleML
     boot::Union{Nothing,BootstrapResult}
     att_models::Vector{DoubleMLDID}
     unit_ids_per_att::Vector{Vector{Int}}  # unit ids used in each ATT
+    all_unit_ids::Vector{Int}              # sorted unique panel units
+    # unit-aligned influence functions: n_units × n_rep × n_att
+    if_units::Array{Float64,3}
     fitted::Bool
     rng::AbstractRNG
 end
@@ -208,7 +211,8 @@ function DoubleMLDIDMulti(data::DoubleMLData, ml_g, ml_m;
         zeros(n_att, n_rep), zeros(n_att, n_rep),
         Array{Float64,3}(undef, 0, 0, 0), Array{Float64,3}(undef, 0, 0, 0),
         Dict{String,Any}(), names,
-        nothing, DoubleMLDID[], Vector{Int}[],
+        nothing, DoubleMLDID[], Vector{Int}[], Int[],
+        Array{Float64,3}(undef, 0, 0, 0),
         false, rng,
     )
 end
@@ -276,6 +280,12 @@ function fit!(m::DoubleMLDIDMulti; store_predictions::Bool=false)
     m.att_models = DoubleMLDID[]
     m.unit_ids_per_att = Vector{Int}[]
 
+    # all panel units for aligned IF space
+    m.all_unit_ids = sort(unique(m.data.id))
+    n_u = length(m.all_unit_ids)
+    id_index = Dict(u => i for (i, u) in enumerate(m.all_unit_ids))
+    if_units = zeros(n_u, n_rep, n_att)
+
     psi_list = Matrix{Float64}[]
     psi_d_list = Matrix{Float64}[]
     max_n = 0
@@ -301,6 +311,16 @@ function fit!(m::DoubleMLDIDMulti; store_predictions::Bool=false)
         max_n = max(max_n, size(did.psi, 1))
         push!(psi_list, did.psi[:, :, 1])
         push!(psi_d_list, did.psi_deriv[:, :, 1])
+
+        # map IF onto full unit space: IF = ψ/J
+        for r in 1:n_rep
+            J = mean(@view did.psi_deriv[:, r, 1])
+            abs(J) < 1e-14 && continue
+            for (k, u) in enumerate(uids)
+                iu = id_index[u]
+                if_units[iu, r, j] = did.psi[k, r, 1] / J
+            end
+        end
     end
 
     psi = fill(0.0, max_n, n_rep, n_att)
@@ -315,8 +335,33 @@ function fit!(m::DoubleMLDIDMulti; store_predictions::Bool=false)
     m.coef = coef; m.se = se
     m.all_coef = all_coef; m.all_se = all_se
     m.psi = psi; m.psi_deriv = psi_d
+    m.if_units = if_units
     m.boot = nothing
     m.fitted = true
+    return m
+end
+
+"""
+Multiplier bootstrap for multi-period DiD using **unit-aligned** influence functions
+(so joint CIs / Romano–Wolf account for dependence across ATTs).
+"""
+function bootstrap!(m::DoubleMLDIDMulti; method::AbstractString="normal",
+                    n_rep_boot::Int=500, rng::Union{Nothing,AbstractRNG}=nothing)
+    m.fitted || error("Call fit! before bootstrap!")
+    isempty(m.if_units) && error("Missing unit IFs; re-fit")
+    rng = rng === nothing ? m.rng : rng
+    n_u, n_rep, n_coef = size(m.if_units)
+    boot_t = fill(NaN, n_rep_boot, n_coef, n_rep)
+    for r in 1:n_rep
+        W = _draw_weights(method, n_rep_boot, n_u, rng)  # n_boot × n_u
+        for j in 1:n_coef
+            IF = @view m.if_units[:, r, j]
+            se_r = m.all_se[j, r]
+            denom = n_u * se_r
+            boot_t[:, j, r] = W * (IF ./ denom)
+        end
+    end
+    m.boot = BootstrapResult(String(method), n_rep_boot, boot_t)
     return m
 end
 
@@ -407,91 +452,112 @@ function _group_shares(data::DoubleMLData, g_values::Vector{Int}, never::Int)
     return shares
 end
 
+function _weighted_att(m::DoubleMLDIDMulti, idx::Vector{Int}, w::Vector{Float64})
+    # coef = Σ w_j θ_j using unit-aligned influence functions for joint SE
+    c = sum(w[k] * m.coef[idx[k]] for k in eachindex(idx))
+    n_u, n_rep, _ = size(m.if_units)
+    # average IF across reps then se
+    if_agg = zeros(n_u)
+    for r in 1:n_rep
+        v = zeros(n_u)
+        for k in eachindex(idx)
+            v .+= w[k] .* @view(m.if_units[:, r, idx[k]])
+        end
+        if_agg .+= v
+    end
+    if_agg ./= n_rep
+    se = sqrt(mean(if_agg .^ 2) / n_u)
+    return c, se
+end
+
+function _combine_aggs(coefs, ses, w)
+    c = sum(w .* coefs)
+    # if we only have diagonal ses, still use weighted quadratic form
+    v = sum((w .* ses) .^ 2)
+    return c, sqrt(max(v, 0.0))
+end
+
+function _combine_aggs_if(m::DoubleMLDIDMulti, idx_list::Vector{Vector{Int}},
+                          w_list::Vector{Vector{Float64}}, w_ov::Vector{Float64})
+    # overall = sum_a w_ov[a] * sum_k w_list[a][k] * θ_{idx_list[a][k]}
+    n_u, n_rep, _ = size(m.if_units)
+    c = 0.0
+    if_ov = zeros(n_u)
+    for (a, idx) in enumerate(idx_list)
+        wa = w_list[a]
+        c += w_ov[a] * sum(wa[k] * m.coef[idx[k]] for k in eachindex(idx))
+        for r in 1:n_rep
+            v = zeros(n_u)
+            for k in eachindex(idx)
+                v .+= wa[k] .* @view(m.if_units[:, r, idx[k]])
+            end
+            if_ov .+= (w_ov[a] / n_rep) .* v
+        end
+    end
+    se = sqrt(mean(if_ov .^ 2) / n_u)
+    return c, se
+end
+
 """
     aggregate(m::DoubleMLDIDMulti, method=:group; post_only=true) -> DIDAggregation
 
-Callaway–Sant'Anna aggregations of group–time ATTs:
+Callaway–Sant'Anna aggregations with **unit-aligned influence-function SEs**:
 
 | `method` | Meaning |
 |----------|---------|
-| `:group` | Average ATT within each first-treatment group `g` (post periods) |
+| `:group` | Average ATT within each first-treatment group `g` |
 | `:time` | Average ATT at each calendar time `t_eval` |
 | `:eventstudy` | Average ATT by event time `e = t_eval − g` |
-
-`post_only=true` (default) restricts to `e ≥ 0` for group/time (eventstudy always
-includes pre periods when estimated). Overall ATT is the share-weighted mean of
-group aggregations (or post event-time aggregations).
 """
 function aggregate(m::DoubleMLDIDMulti, method::Symbol=:group; post_only::Bool=true)
     m.fitted || error("Call fit! before aggregate")
     method in (:group, :time, :eventstudy) ||
         throw(ArgumentError("method must be :group, :time, or :eventstudy"))
+    isempty(m.if_units) && error("Model missing unit IFs; re-fit with updated package")
 
     n_att = length(m.gt_combos)
     gvec = [c[1] for c in m.gt_combos]
-    tpre = [c[2] for c in m.gt_combos]
     teval = [c[3] for c in m.gt_combos]
     evec = teval .- gvec
     shares = _group_shares(m.data, m.g_values, m.never_treated_value)
-
-    # select ATT indices
-    if method === :eventstudy
-        sel = trues(n_att)
-    else
-        sel = post_only ? (evec .>= 0) : trues(n_att)
-    end
+    sel = method === :eventstudy ? trues(n_att) : (post_only ? (evec .>= 0) : trues(n_att))
     any(sel) || error("No ATT cells selected for aggregation")
+
+    names = String[]; coefs = Float64[]; ses = Float64[]
+    idx_list = Vector{Int}[]; w_list = Vector{Float64}[]; w_ov = Float64[]
 
     if method === :group
         groups = sort(unique(gvec[sel]))
-        names = String[]; coefs = Float64[]; ses = Float64[]; w_ov = Float64[]
         for g in groups
             idx = findall(i -> sel[i] && gvec[i] == g, 1:n_att)
             w = fill(1 / length(idx), length(idx))
             c, s = _weighted_att(m, idx, w)
-            push!(names, "g=$g")
-            push!(coefs, c); push!(ses, s)
+            push!(names, "g=$g"); push!(coefs, c); push!(ses, s)
+            push!(idx_list, idx); push!(w_list, w)
             push!(w_ov, get(shares, g, 0.0))
         end
-        # normalize overall weights
-        sw = sum(w_ov)
-        sw > 0 || (w_ov .= 1 / length(w_ov); sw = 1.0)
-        w_ov ./= sw
-        oc, os = _combine_aggs(coefs, ses, w_ov)
-        return DIDAggregation("group", names, coefs, ses, w_ov, oc, os)
-
+        sw = sum(w_ov); sw > 0 || (w_ov .= 1 / length(w_ov); sw = 1.0); w_ov ./= sw
     elseif method === :time
         times = sort(unique(teval[sel]))
-        names = String[]; coefs = Float64[]; ses = Float64[]
         for t in times
             idx = findall(i -> sel[i] && teval[i] == t, 1:n_att)
-            # weight by group share within this t
-            ws = Float64[]
-            for i in idx
-                push!(ws, get(shares, gvec[i], 0.0))
-            end
-            ssum = sum(ws)
-            ssum > 0 || (ws .= 1 / length(ws); ssum = 1.0)
-            ws ./= ssum
+            ws = Float64[get(shares, gvec[i], 0.0) for i in idx]
+            ssum = sum(ws); ssum > 0 || (ws .= 1 / length(ws); ssum = 1.0); ws ./= ssum
             c, s = _weighted_att(m, idx, ws)
             push!(names, "t=$t"); push!(coefs, c); push!(ses, s)
+            push!(idx_list, idx); push!(w_list, ws)
         end
         w_ov = fill(1 / length(coefs), length(coefs))
-        oc, os = _combine_aggs(coefs, ses, w_ov)
-        return DIDAggregation("time", names, coefs, ses, w_ov, oc, os)
-
-    else  # eventstudy
+    else
         es = sort(unique(evec[sel]))
-        names = String[]; coefs = Float64[]; ses = Float64[]; w_ov = Float64[]
         n_post = count(>=(0), es)
         for e in es
             idx = findall(i -> sel[i] && evec[i] == e, 1:n_att)
             ws = Float64[get(shares, gvec[i], 0.0) for i in idx]
-            ssum = sum(ws)
-            ssum > 0 || (ws .= 1 / length(ws); ssum = 1.0)
-            ws ./= ssum
+            ssum = sum(ws); ssum > 0 || (ws .= 1 / length(ws); ssum = 1.0); ws ./= ssum
             c, s = _weighted_att(m, idx, ws)
             push!(names, "e=$e"); push!(coefs, c); push!(ses, s)
+            push!(idx_list, idx); push!(w_list, ws)
             push!(w_ov, e >= 0 ? 1 / max(n_post, 1) : 0.0)
         end
         if sum(w_ov) <= 0
@@ -499,21 +565,68 @@ function aggregate(m::DoubleMLDIDMulti, method::Symbol=:group; post_only::Bool=t
         else
             w_ov ./= sum(w_ov)
         end
-        oc, os = _combine_aggs(coefs, ses, w_ov)
-        return DIDAggregation("eventstudy", names, coefs, ses, w_ov, oc, os)
     end
+
+    oc, os = _combine_aggs_if(m, idx_list, w_list, w_ov)
+    return DIDAggregation(String(method), names, coefs, ses, w_ov, oc, os)
 end
 
-function _weighted_att(m::DoubleMLDIDMulti, idx::Vector{Int}, w::Vector{Float64})
-    # coef = Σ w_j θ_j
-    # se² ≈ Σ w_j² se_j²  (conservative; ignores cross-ATT dependence)
-    c = sum(w[k] * m.coef[idx[k]] for k in eachindex(idx))
-    v = sum((w[k] * m.se[idx[k]])^2 for k in eachindex(idx))
-    return c, sqrt(max(v, 0.0))
+"""
+    p_adjust(m::DoubleMLDIDMulti; method=:romano_wolf) -> DataFrame
+
+Multiple-testing adjusted p-values for group–time ATTs.
+`method`: `:romano_wolf` (bootstrap stepdown), `:bonferroni`, `:holm`.
+Requires [`bootstrap!`](@ref) for Romano–Wolf.
+"""
+function p_adjust(m::DoubleMLDIDMulti; method::Symbol=:romano_wolf, level::Real=0.95)
+    m.fitted || error("Call fit! first")
+    raw = pval(m)
+    names = m.treat_names
+    if method === :bonferroni
+        adj = min.(1.0, raw .* length(raw))
+    elseif method === :holm
+        adj = _holm_adjust(raw)
+    elseif method === :romano_wolf
+        m.boot === nothing && error("Apply bootstrap! before p_adjust(:romano_wolf)")
+        adj = _romano_wolf_adjust(m)
+    else
+        throw(ArgumentError("method must be :romano_wolf, :bonferroni, or :holm"))
+    end
+    return DataFrame(att=names, pvalue=raw, pvalue_adjusted=adj, method=fill(String(method), length(raw)))
 end
 
-function _combine_aggs(coefs, ses, w)
-    c = sum(w .* coefs)
-    v = sum((w .* ses) .^ 2)
-    return c, sqrt(max(v, 0.0))
+function _holm_adjust(p::Vector{Float64})
+    n = length(p)
+    ord = sortperm(p)
+    adj = similar(p)
+    for (rank, i) in enumerate(ord)
+        adj[i] = min(1.0, p[i] * (n - rank + 1))
+    end
+    # enforce monotonicity
+    for k in 2:n
+        adj[ord[k]] = max(adj[ord[k]], adj[ord[k-1]])
+    end
+    return adj
+end
+
+function _romano_wolf_adjust(m::DoubleMLDIDMulti)
+    # stepdown using bootstrap t-stats
+    t0 = abs.(t_stat(m))
+    boot = abs.(m.boot.boot_t_stat)  # n_boot × n_coef × n_rep
+    n_boot, n_coef, n_rep = size(boot)
+    # median over reps
+    boot_med = mapslices(median, boot; dims=3)[:, :, 1]  # n_boot × n_coef
+    ord = sortperm(t0; rev=true)  # largest |t| first
+    adj = ones(n_coef)
+    for (step, j) in enumerate(ord)
+        # max |t| over remaining hypotheses
+        remain = ord[step:end]
+        max_boot = maximum(boot_med[:, remain]; dims=2)[:]
+        adj[j] = mean(max_boot .>= t0[j])
+    end
+    # enforce increasing in stepdown order
+    for step in 2:n_coef
+        adj[ord[step]] = max(adj[ord[step]], adj[ord[step-1]])
+    end
+    return adj
 end

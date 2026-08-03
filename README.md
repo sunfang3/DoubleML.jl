@@ -114,6 +114,10 @@ model.confint()                →    confint(model)
 | **LPLR** | Logistic partially linear (binary Y) | ✅ |
 | **PLPR** | Panel PLR: `fd_exact` / `wg_approx` / `cre_general` / `cre_normal` | ✅ |
 | **RDFlex / RDD** | Iterative bandwidth, `fs_specification`, sharp/fuzzy local linear | ✅ |
+| **SSM nonignorable** | Nested cross-fitting with Z (Python parity) | ✅ |
+| **set_ml_nuisance_params!** | Per-learner hyperparams before `fit!` | ✅ |
+| **store_models** | Nested CF models stored for SSM | ✅ |
+| **effects_table / plot_effects** | DID multi event-study / group / time table | ✅ |
 | **SSM** | Sample selection (`missing-at-random` / basic `nonignorable`) | ✅ |
 | **RDD** | Sharp/fuzzy RD with ML residualization + local linear | ✅ |
 | **Cluster SE** | One-way post-hoc + **cluster-in-fit** (1/2-way) for PLR/IRM | ✅ |

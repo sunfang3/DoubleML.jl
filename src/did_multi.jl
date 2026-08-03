@@ -372,6 +372,41 @@ function bootstrap!(m::DoubleMLDIDMulti; method::AbstractString="normal",
     return m
 end
 
+"""
+    effects_table(m::DoubleMLDIDMulti; method=:eventstudy, post_only=false)
+
+Aggregation table suitable for event-study / group / time plots
+(Python `plot_effects` data layer).
+
+Returns a `DataFrame` with columns `name`, `event_time` (or group/time key),
+`coef`, `std_err`, `ci_lower`, `ci_upper`.
+"""
+function effects_table(m::DoubleMLDIDMulti; method::Symbol=:eventstudy,
+                       post_only::Bool=false, level::Real=0.95)
+    a = aggregate(m, method; post_only=post_only)
+    z = quantile(Normal(), 1 - (1 - level) / 2)
+    # parse event time / keys from names like "e=-1", "g=2", "t=3"
+    keys = Float64[]
+    for nm in a.names
+        mobj = match(r"=(-?\d+\.?\d*)", nm)
+        push!(keys, mobj === nothing ? NaN : parse(Float64, mobj.captures[1]))
+    end
+    return DataFrame(
+        name = a.names,
+        key = keys,
+        coef = a.coef,
+        std_err = a.se,
+        ci_lower = a.coef .- z .* a.se,
+        ci_upper = a.coef .+ z .* a.se,
+        method = fill(String(method), length(a.coef)),
+        overall_coef = fill(a.overall_coef, length(a.coef)),
+        overall_se = fill(a.overall_se, length(a.coef)),
+    )
+end
+
+"""Alias for Python-oriented API (`plot_effects` returns data, not a figure)."""
+plot_effects(m::DoubleMLDIDMulti; kwargs...) = effects_table(m; kwargs...)
+
 """Group–time ATT table with event time `e = t_eval − g`."""
 function att_table(m::DoubleMLDIDMulti; level::Real=0.95)
     m.fitted || error("Call fit! first")

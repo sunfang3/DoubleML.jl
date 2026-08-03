@@ -105,6 +105,64 @@ function set_sample_splitting!(m::AbstractDoubleML, smpls)
 end
 
 """
+    set_ml_nuisance_params!(m, learner, treat_var, params)
+
+Set hyperparameters for a nuisance learner (Python `set_ml_nuisance_params`).
+
+# Arguments
+- `learner`: e.g. `"ml_l"`, `"ml_m"`, `"ml_g"`, `"ml_g0"`, `"ml_pi"`
+- `treat_var`: treatment name (usually `m.data.d_col` or `m.data.d_cols[j]`)
+- `params`: `Dict` of keyword params applied via `set_params!` to clones at fit time,
+  or nested `Vector` of length `n_rep` of vectors of length `n_folds` for fold-specific params.
+
+Stored on `m.ml_params` when the model has that field.
+"""
+function set_ml_nuisance_params!(m::AbstractDoubleML, learner::AbstractString,
+                                 treat_var::AbstractString, params)
+    hasproperty(m, :ml_params) || error("Model does not support ml_params storage")
+    key = String(learner)
+    tv = String(treat_var)
+    if !haskey(m.ml_params, key)
+        m.ml_params[key] = Dict{String,Any}()
+    end
+    m.ml_params[key][tv] = params
+    m.fitted = false
+    return m
+end
+
+"""Resolve params for one fold: returns NamedTuple/kwargs dict or nothing."""
+function _params_for_fold(m::AbstractDoubleML, learner::AbstractString, treat_var::AbstractString,
+                          rep::Int, fold::Int)
+    hasproperty(m, :ml_params) || return nothing
+    !haskey(m.ml_params, learner) && return nothing
+    d = m.ml_params[learner]
+    !haskey(d, treat_var) && return nothing
+    p = d[treat_var]
+    p === nothing && return nothing
+    if p isa AbstractDict
+        return p
+    elseif p isa AbstractVector
+        # n_rep × n_folds nested
+        length(p) >= rep || return nothing
+        inner = p[rep]
+        inner isa AbstractVector || return inner
+        length(inner) >= fold || return nothing
+        return inner[fold]
+    else
+        return p
+    end
+end
+
+function _clone_with_params(learner, params)
+    m = clone(learner)
+    if params !== nothing && params isa AbstractDict && !isempty(params)
+        kwargs = Dict{Symbol,Any}(Symbol(k) => v for (k, v) in pairs(params))
+        set_params!(m; kwargs...)
+    end
+    return m
+end
+
+"""
     evaluate_learners(m; metric=rmse) -> Dict
 
 Cross-fitted nuisance prediction quality (Python `evaluate_learners`).

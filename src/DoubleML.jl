@@ -98,7 +98,10 @@ export
     BootstrapResult,
     p_adjust,
     set_sample_splitting!,
+    set_ml_nuisance_params!,
     evaluate_learners,
+    effects_table,
+    plot_effects,
     cluster_se,
     apply_cluster_se!,
     # framework

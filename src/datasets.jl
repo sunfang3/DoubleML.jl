@@ -277,17 +277,25 @@ end
 Sample selection MAR DGP. `s` is selection; `y` is observed only when `s=1`
 (unobserved filled with 0 for storage).
 """
-function make_ssm_data(; n_obs::Int=1000, dim_x::Int=5, theta::Real=1.0, seed=nothing)
+function make_ssm_data(; n_obs::Int=1000, dim_x::Int=5, theta::Real=1.0,
+                       nonignorable::Bool=false, seed=nothing)
     rng = seed === nothing ? Random.default_rng() : MersenneTwister(seed)
     X = randn(rng, n_obs, dim_x)
     p_d = 1 ./ (1 .+ exp.(-0.5 .* X[:, 1]))
     d = Float64.(rand(rng, n_obs) .< p_d)
-    # selection depends on X, D
-    p_s = 1 ./ (1 .+ exp.(-(0.5 .+ 0.5 .* X[:, 1] .+ 0.3 .* d)))
+    z = nothing
+    if nonignorable
+        # instrument for selection (affects S, not Y directly)
+        z = randn(rng, n_obs, 1)
+        p_s = 1 ./ (1 .+ exp.(-(0.3 .+ 0.4 .* X[:, 1] .+ 0.3 .* d .+ 0.8 .* z[:, 1])))
+    else
+        p_s = 1 ./ (1 .+ exp.(-(0.5 .+ 0.5 .* X[:, 1] .+ 0.3 .* d)))
+    end
     s = Float64.(rand(rng, n_obs) .< p_s)
     y_star = theta .* d .+ X[:, 1] .+ randn(rng, n_obs)
     y = ifelse.(s .== 1, y_star, 0.0)
-    return DoubleMLData(X, y, d; y_col="y", d_col="d", s=s, s_col="s")
+    return DoubleMLData(X, y, d; y_col="y", d_col="d", s=s, s_col="s",
+                        z=z, z_cols=z === nothing ? nothing : ["z"])
 end
 
 """

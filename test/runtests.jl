@@ -700,6 +700,25 @@ using Statistics
         @test ssm.se[1] > 0
     end
 
+    @testset "SSM nonignorable nested CF" begin
+        data = make_ssm_data(n_obs=1800, dim_x=4, theta=1.0; nonignorable=true, seed=612)
+        @test n_instr(data) == 1
+        ssm = DoubleMLSSM(
+            data,
+            RidgeLearner(α=0.5),
+            LogisticRegressionLearner(α=0.5),
+            LogisticRegressionLearner(α=0.5);
+            score="nonignorable", n_folds=3, trimming_threshold=0.05,
+            rng=MersenneTwister(612),
+        )
+        fit!(ssm; store_models=true)
+        @test isfinite(ssm.coef[1])
+        @test abs(ssm.coef[1] - 1.0) < 1.0
+        @test ssm.se[1] > 0
+        @test haskey(ssm.models, "reps")
+        @test !isempty(ssm.models["reps"])
+    end
+
     @testset "DID multi Callaway–Sant'Anna" begin
         data = make_did_panel_data(n_id=280, n_t=4, dim_x=3, theta=2.0; seed=621)
         multi = DoubleMLDIDMulti(
@@ -1024,5 +1043,20 @@ using Statistics
         @test all(isfinite, multi.coef)
         post = att_table(multi)
         @test abs(mean(post.coef[post.post]) - 2.0) < 1.5
+        et = effects_table(multi; method=:eventstudy)
+        @test nrow(et) >= 1
+        @test :ci_lower in propertynames(et)
+        @test plot_effects(multi; method=:group) isa DataFrame
+    end
+
+    @testset "set_ml_nuisance_params PLR" begin
+        data = make_plr_data(n_obs=400, dim_x=4, theta=0.5; seed=931)
+        plr = DoubleMLPLR(data, RidgeLearner(α=1.0), RidgeLearner(α=1.0);
+                          n_folds=3, rng=MersenneTwister(931))
+        set_ml_nuisance_params!(plr, "ml_l", data.d_col, Dict(:α => 0.1))
+        set_ml_nuisance_params!(plr, "ml_m", data.d_col, Dict(:α => 0.1))
+        fit!(plr)
+        @test isfinite(plr.coef[1])
+        @test haskey(plr.ml_params, "ml_l")
     end
 end

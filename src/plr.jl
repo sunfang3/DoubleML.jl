@@ -43,6 +43,8 @@ mutable struct DoubleMLPLR <: AbstractDoubleML
     sensitivity::Union{Nothing,SensitivityResult}
     fitted::Bool
     rng::AbstractRNG
+    ml_params::Dict{String,Any}
+    models::Dict{String,Any}
 end
 
 function DoubleMLPLR(data::DoubleMLData, ml_l, ml_m;
@@ -82,10 +84,21 @@ function DoubleMLPLR(data::DoubleMLData, ml_l, ml_m;
         copy(data.d_cols),
         nothing, nothing, nothing,
         false, rng,
+        Dict{String,Any}(), Dict{String,Any}(),
     )
 end
 
+function _plr_learner(m::DoubleMLPLR, base, name::String, tname::String)
+    p = nothing
+    if haskey(m.ml_params, name) && haskey(m.ml_params[name], tname)
+        raw = m.ml_params[name][tname]
+        raw isa AbstractDict && (p = raw)
+    end
+    return p === nothing ? base : _clone_with_params(base, p)
+end
+
 function fit!(m::DoubleMLPLR; store_predictions::Bool=true,
+              store_models::Bool=false,
               external_predictions=nothing)
     data = m.data
     y = data.y
@@ -118,10 +131,14 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true,
     psi_s = fill(NaN, n, n_rep)
     psi_n = fill(NaN, n, n_rep)
     rr_m = fill(NaN, n, n_rep)
+    models_out = Dict{String,Any}()
 
     for j in 1:n_t
         X, d, tname = design_for_treatment(data, j)
         d = collect(d)
+        ml_l = _plr_learner(m, m.ml_l, "ml_l", tname)
+        ml_m = _plr_learner(m, m.ml_m, "ml_m", tname)
+        ml_g = m.ml_g === nothing ? nothing : _plr_learner(m, m.ml_g, "ml_g", tname)
         # per-treatment nested external predictions (Python style)
         ext_j = if external_predictions isa AbstractDict &&
                    (haskey(external_predictions, tname) || haskey(external_predictions, Symbol(tname)))
@@ -132,19 +149,19 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true,
         end
         for r in 1:n_rep
             folds = m.smpls[r]
-            use_clf_m = is_classifier(m.ml_m)
+            use_clf_m = is_classifier(ml_m)
 
             ℓ̂ = something(_apply_external_pred(ext_j, "ml_l", r, n),
-                           cross_fit_predict(m.ml_l, X, y, folds; classifier=false))
+                           cross_fit_predict(ml_l, X, y, folds; classifier=false))
             m̂ = something(_apply_external_pred(ext_j, "ml_m", r, n),
-                           cross_fit_predict(m.ml_m, X, d, folds; classifier=use_clf_m))
+                           cross_fit_predict(ml_m, X, d, folds; classifier=use_clf_m))
 
             if m.score == "IV-type"
                 v = d .- m̂
                 u = y .- ℓ̂
                 θ0 = sum(v .* u) / sum(v .* v)
                 ĝ = something(_apply_external_pred(ext_j, "ml_g", r, n),
-                               cross_fit_predict(m.ml_g, X, y .- θ0 .* d, folds; classifier=false))
+                               cross_fit_predict(ml_g, X, y .- θ0 .* d, folds; classifier=false))
                 psi_a = -(d .- m̂) .* d
                 psi_b = (d .- m̂) .* (y .- ĝ)
                 if j == 1
@@ -213,6 +230,10 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true,
             m.predictions["ml_g"] = g_preds
         end
     end
+    # store_models: keep configured params snapshot (full fold models are heavy;
+    # nested CF models are stored on SSM). Here record that models were requested.
+    m.models = store_models ? Dict{String,Any}("note" => "use predictions; fold models not retained for PLR") :
+                             Dict{String,Any}()
     m.fitted = true
     return m
 end

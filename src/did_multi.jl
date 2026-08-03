@@ -150,6 +150,7 @@ mutable struct DoubleMLDIDMulti <: AbstractDoubleML
     n_rep::Int
     score::String
     trimming_threshold::Float64
+    ps_processor::PSProcessor
     in_sample_normalization::Bool
     never_treated_value::Int
     g_values::Vector{Int}
@@ -182,6 +183,7 @@ function DoubleMLDIDMulti(data::DoubleMLData, ml_g, ml_m=nothing;
                           n_rep::Int=1,
                           score::AbstractString="observational",
                           trimming_threshold::Real=1e-2,
+                          ps_processor::Union{Nothing,PSProcessor}=nothing,
                           in_sample_normalization::Bool=true,
                           never_treated_value::Integer=0,
                           rng::AbstractRNG=Random.default_rng())
@@ -211,7 +213,9 @@ function DoubleMLDIDMulti(data::DoubleMLData, ml_g, ml_m=nothing;
     names = ["ATT(g=$g,t_pre=$tp,t=$te)" for (g, tp, te) in combos]
     return DoubleMLDIDMulti(
         data, ml_g, ml_m, cg, anticipation_periods,
-        n_folds, n_rep, sc, Float64(trimming_threshold), in_sample_normalization,
+        n_folds, n_rep, sc, Float64(trimming_threshold),
+        resolve_ps_processor(ps_processor, trimming_threshold),
+        in_sample_normalization,
         never, gvals, tvals, combos,
         Vector{Any}(),
         Float64[], Float64[],
@@ -308,6 +312,7 @@ function fit!(m::DoubleMLDIDMulti; store_predictions::Bool=false)
             score=m.score,
             in_sample_normalization=m.in_sample_normalization,
             trimming_threshold=m.trimming_threshold,
+            ps_processor=m.ps_processor,
             rng=copy(m.rng),
         )
         fit!(did; store_predictions=store_predictions)
@@ -438,7 +443,14 @@ end
 
 # ---- Aggregation (Callaway–Sant'Anna) ---------------------------------------
 
-"""Result of [`aggregate`](@ref) for DID multi."""
+"""
+Result of [`aggregate`](@ref) for DID multi (Python `DoubleMLDIDAggregation`).
+
+Fields align with Python naming where practical:
+- `aggregation_method_name` / `aggregation_names` / `aggregation_weights`
+- `overall_aggregation_weights` / overall point+SE
+- `additional_information` — free-form metadata
+"""
 struct DIDAggregation
     method::String
     names::Vector{String}
@@ -447,7 +459,15 @@ struct DIDAggregation
     weights_overall::Vector{Float64}  # weight of each aggregation in overall
     overall_coef::Float64
     overall_se::Float64
+    aggregation_weights::Vector{Vector{Float64}}  # per-agg cell weights
+    additional_information::Dict{String,Any}
 end
+
+# Python-compatible property aliases
+aggregation_method_name(a::DIDAggregation) = a.method
+aggregation_names(a::DIDAggregation) = a.names
+overall_aggregation_weights(a::DIDAggregation) = a.weights_overall
+n_aggregations(a::DIDAggregation) = length(a.coef)
 
 function Base.show(io::IO, a::DIDAggregation)
     print(io, "DIDAggregation($(a.method); overall=$(round(a.overall_coef; digits=4)), ",
@@ -480,6 +500,56 @@ function summary_table(a::DIDAggregation; level::Real=0.95)
         ci_upper = a.overall_coef + z * a.overall_se,
     ))
     return df
+end
+
+"""Python `aggregated_summary` — same as [`summary_table`](@ref) without overall row."""
+function aggregated_summary(a::DIDAggregation; level::Real=0.95)
+    df = summary_table(a; level=level)
+    return df[1:(end - 1), :]
+end
+
+"""Python `overall_summary` — single-row overall aggregation."""
+function overall_summary(a::DIDAggregation; level::Real=0.95)
+    z = quantile(Normal(), 1 - (1 - level) / 2)
+    t = a.overall_coef / a.overall_se
+    return DataFrame(
+        name = ["overall"],
+        coef = [a.overall_coef],
+        std_err = [a.overall_se],
+        t = [t],
+        pvalue = [2 * cdf(Normal(), -abs(t))],
+        ci_lower = [a.overall_coef - z * a.overall_se],
+        ci_upper = [a.overall_coef + z * a.overall_se],
+    )
+end
+
+function confint(a::DIDAggregation; level::Real=0.95)
+    z = quantile(Normal(), 1 - (1 - level) / 2)
+    return DataFrame(
+        name = vcat(a.names, ["overall"]),
+        lower = vcat(a.coef .- z .* a.se, [a.overall_coef - z * a.overall_se]),
+        upper = vcat(a.coef .+ z .* a.se, [a.overall_coef + z * a.overall_se]),
+        level = fill(Float64(level), length(a.coef) + 1),
+    )
+end
+
+"""Plot-ready table for an aggregation (Python `plot_effects` data layer)."""
+function plot_effects(a::DIDAggregation; level::Real=0.95)
+    z = quantile(Normal(), 1 - (1 - level) / 2)
+    keys = Float64[]
+    for nm in a.names
+        mobj = match(r"=(-?\d+\.?\d*)", nm)
+        push!(keys, mobj === nothing ? NaN : parse(Float64, mobj.captures[1]))
+    end
+    return DataFrame(
+        name = a.names,
+        key = keys,
+        coef = a.coef,
+        std_err = a.se,
+        ci_lower = a.coef .- z .* a.se,
+        ci_upper = a.coef .+ z .* a.se,
+        method = fill(a.method, length(a.names)),
+    )
 end
 
 """Share of units in each treatment group (balanced panel unit-level)."""
@@ -610,7 +680,13 @@ function aggregate(m::DoubleMLDIDMulti, method::Symbol=:group; post_only::Bool=t
     end
 
     oc, os = _combine_aggs_if(m, idx_list, w_list, w_ov)
-    return DIDAggregation(String(method), names, coefs, ses, w_ov, oc, os)
+    info = Dict{String,Any}(
+        "Score function" => m.score,
+        "Control group" => m.control_group,
+        "Anticipation periods" => m.anticipation_periods,
+        "post_only" => post_only,
+    )
+    return DIDAggregation(String(method), names, coefs, ses, w_ov, oc, os, w_list, info)
 end
 
 """

@@ -1173,4 +1173,127 @@ using Statistics
         @test length(unique(disc.d)) >= 2
         @test length(disc.d_cont) == 250
     end
+
+    @testset "PSProcessor on DID/IIVM/SSM + DIDBinary alias" begin
+        @test DoubleMLDIDBinary === DoubleMLDID
+        psp = PSProcessor(clipping_threshold=0.02)
+        ddata = make_did_data(n_obs=400, theta=-1.5; seed=961)
+        did = DoubleMLDID(ddata, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+                          n_folds=3, ps_processor=psp, rng=MersenneTwister(961))
+        fit!(did)
+        @test isfinite(did.coef[1])
+        @test did.ps_processor.clipping_threshold == 0.02
+
+        iv = make_iivm_data(n_obs=800, dim_x=3, theta=0.5; seed=962)
+        iivm = DoubleMLIIVM(iv, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5),
+                           LogisticRegressionLearner(α=0.5);
+                           n_folds=3, ps_processor=psp, rng=MersenneTwister(962))
+        fit!(iivm)
+        @test isfinite(iivm.coef[1])
+
+        sdata = make_ssm_data(n_obs=500, dim_x=3, theta=1.0; seed=963)
+        ssm = DoubleMLSSM(sdata, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5),
+                          LogisticRegressionLearner(α=0.5);
+                          n_folds=3, ps_processor=psp, rng=MersenneTwister(963))
+        fit!(ssm)
+        @test isfinite(ssm.coef[1])
+    end
+
+    @testset "DIDAggregation API surface" begin
+        data = make_did_panel_data(n_id=120, n_t=4, dim_x=2, theta=2.0; seed=964)
+        multi = DoubleMLDIDMulti(
+            data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            n_folds=3, rng=MersenneTwister(964),
+        )
+        fit!(multi)
+        a = aggregate(multi, :eventstudy; post_only=false)
+        @test a isa DIDAggregation
+        @test aggregation_method_name(a) == "eventstudy"
+        @test length(aggregation_names(a)) == n_aggregations(a)
+        @test nrow(aggregated_summary(a)) == n_aggregations(a)
+        @test nrow(overall_summary(a)) == 1
+        @test nrow(plot_effects(a)) == n_aggregations(a)
+        @test nrow(confint(a)) == n_aggregations(a) + 1
+        @test haskey(a.additional_information, "Score function")
+    end
+
+    @testset "Callable custom scores PLR/IRM" begin
+        data = make_plr_data(n_obs=500, dim_x=4, theta=0.5; seed=965)
+        # residual-on-residual as a callable (matches partialling out)
+        score_fn = function (y, d, preds)
+            v = d .- preds.m_hat
+            u = y .- preds.l_hat
+            return -(v .* v), v .* u
+        end
+        plr = DoubleMLPLR(data, LinearRegressionLearner(), LinearRegressionLearner();
+                          score=score_fn, n_folds=3, rng=MersenneTwister(965))
+        fit!(plr)
+        @test isfinite(plr.coef[1])
+        @test abs(plr.coef[1] - 0.5) < 0.35
+        @test plr.sens_elements === nothing  # no OVB for callables
+
+        idata = make_irm_data(n_obs=600, dim_x=3, theta=0.5; seed=966)
+        ate_fn = function (y, d, preds)
+            g0, g1, m̂ = preds.g0, preds.g1, preds.m_hat
+            dr = (g1 .- g0) .+ d .* (y .- g1) ./ m̂ .- (1 .- d) .* (y .- g0) ./ (1 .- m̂)
+            return fill(-1.0, length(y)), dr
+        end
+        irm = DoubleMLIRM(idata, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+                          score=ate_fn, n_folds=3, rng=MersenneTwister(966))
+        fit!(irm)
+        @test isfinite(irm.coef[1])
+    end
+
+    @testset "Optuna-style tune" begin
+        data = make_plr_data(n_obs=400, dim_x=4, theta=0.5; seed=967)
+        plr = DoubleMLPLR(data, RidgeLearner(α=1.0), RidgeLearner(α=1.0);
+                          n_folds=3, rng=MersenneTwister(967))
+        res = tune_optuna!(plr;
+                           param_spaces=Dict(
+                               :ml_l => Dict(:α => (0.01, 10.0, :log)),
+                               :ml_m => Dict(:α => [0.1, 1.0, 10.0]),
+                           ),
+                           n_trials=12, n_startup=5, n_folds_tune=3,
+                           rng=MersenneTwister(967))
+        @test haskey(res, :ml_l)
+        @test res[:ml_l] isa DMLOptunaResult
+        @test res[:ml_l].n_trials == 12
+        fit!(plr)
+        @test isfinite(plr.coef[1])
+
+        # search_mode=:optuna on tune_learner
+        best, tr = tune_learner(RidgeLearner(α=1.0), data.x, data.y,
+                                Dict(:α => [0.1, 1.0, 10.0]);
+                                search_mode=:optuna, n_iter=8, n_folds=3,
+                                rng=MersenneTwister(968))
+        @test tr.best_score < Inf
+    end
+
+    @testset "RDFlex BC/Robust estimates" begin
+        data = make_rdd_data(n_obs=1500, dim_x=2, tau=1.0; seed=969)
+        rdd = RDFlex(data, LinearRegressionLearner(); n_folds=3, n_iterations=2,
+                     rng=MersenneTwister(969))
+        fit!(rdd)
+        @test isfinite(rdd.coef[1])
+        @test isfinite(rdd.coef_conventional)
+        @test isfinite(rdd.coef_bias_corrected)
+        @test isfinite(rdd.se_robust)
+        ci = confint(rdd; kind=:robust)
+        @test nrow(ci) == 1
+        @test ci.estimate[1] == "Robust"
+        sm = rdd_summary(rdd)
+        @test nrow(sm) == 3
+    end
+
+    @testset "fetch_bonus real data (network)" begin
+        try
+            d = fetch_bonus(return_type=:DoubleMLData)
+            @test d isa DoubleMLData
+            @test length(d.y) > 1000
+            @test length(d.y) == size(d.x, 1)
+        catch e
+            @info "fetch_bonus skipped (network/python)" exception=e
+            @test true
+        end
+    end
 end

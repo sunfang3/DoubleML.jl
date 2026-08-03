@@ -30,6 +30,7 @@ mutable struct DoubleMLDID <: AbstractDoubleML
     score::String
     in_sample_normalization::Bool
     trimming_threshold::Float64
+    ps_processor::PSProcessor
     smpls::Vector
     coef::Vector{Float64}
     se::Vector{Float64}
@@ -50,6 +51,7 @@ function DoubleMLDID(data::DoubleMLData, ml_g, ml_m=nothing;
                      score::AbstractString="observational",
                      in_sample_normalization::Bool=true,
                      trimming_threshold::Real=1e-2,
+                     ps_processor::Union{Nothing,PSProcessor}=nothing,
                      draw_sample_splitting::Bool=true,
                      rng::AbstractRNG=Random.default_rng())
     sc = String(score)
@@ -65,9 +67,10 @@ function DoubleMLDID(data::DoubleMLData, ml_g, ml_m=nothing;
         make_repeated_folds(n_obs(data), n_folds, n_rep; rng=rng) :
         Vector{Any}()
     n = n_obs(data)
+    psp = resolve_ps_processor(ps_processor, trimming_threshold)
     return DoubleMLDID(
         data, ml_g, ml_m, n_folds, n_rep, sc, in_sample_normalization,
-        Float64(trimming_threshold), smpls,
+        Float64(trimming_threshold), psp, smpls,
         Float64[], Float64[],
         zeros(1, n_rep), zeros(1, n_rep),
         fill(NaN, n, n_rep, 1), fill(NaN, n, n_rep, 1),
@@ -117,8 +120,6 @@ function fit!(m::DoubleMLDID; store_predictions::Bool=true)
     X, y, d = data.x, data.y, data.d
     n = n_obs(data)
     n_rep = m.n_rep
-    ε = m.trimming_threshold
-
     if isempty(m.smpls)
         m.smpls = make_repeated_folds(n, m.n_folds, n_rep; rng=m.rng)
     end
@@ -136,7 +137,7 @@ function fit!(m::DoubleMLDID; store_predictions::Bool=true)
         g0, g1 = _cross_fit_g_binary(m.ml_g, X, y, d, folds)
         if m.score == "observational"
             m̂ = cross_fit_predict(m.ml_m, X, d, folds; classifier=is_classifier(m.ml_m))
-            m̂ = clamp.(m̂, ε, 1 - ε)
+            m̂ = process_propensity(m̂, m.ps_processor)
         else
             m̂ = fill(mean(d), n)
         end
@@ -163,3 +164,6 @@ function fit!(m::DoubleMLDID; store_predictions::Bool=true)
     m.fitted = true
     return m
 end
+
+"""Python-compatible alias for two-period binary DiD."""
+const DoubleMLDIDBinary = DoubleMLDID

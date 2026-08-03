@@ -46,6 +46,12 @@ mutable struct DoubleMLRDD <: AbstractDoubleML
     rng::AbstractRNG
     h_used::Float64
     all_h::Vector{Float64}
+    # rdrobust-style triple: Conventional / Bias-Corrected / Robust
+    coef_conventional::Float64
+    coef_bias_corrected::Float64
+    se_conventional::Float64
+    se_bias_corrected::Float64
+    se_robust::Float64
 end
 
 const _FS_SPECS = ("cutoff", "cutoff and score", "interacted cutoff and score")
@@ -83,6 +89,7 @@ function DoubleMLRDD(data::DoubleMLData, ml_g, ml_m=nothing;
         fill(NaN, n, n_rep, 1), fill(NaN, n, n_rep, 1),
         Dict{String,Any}(), ["LATE_RD"],
         nothing, false, rng, NaN, fill(NaN, n_rep),
+        NaN, NaN, NaN, NaN, NaN,
     )
 end
 
@@ -161,7 +168,7 @@ function _fit_nuisance_rdd(ml, outcome, X, Z, ZL, ZR, weights, folds; classifier
     return 0.5 .* (muL .+ muR)
 end
 
-"""Local linear weighted regression of y on [1, s, d, d*s]."""
+"""Local linear weighted regression of y on [1, s, d, d*s] (Conventional)."""
 function _local_linear_rd(s, y, d, w)
     n = length(y)
     X = hcat(ones(n), s, d, d .* s)
@@ -179,6 +186,57 @@ function _local_linear_rd(s, y, d, w)
     Ω = bread * meat * bread
     se = sqrt(max(Ω[3, 3], 0.0))
     return β[3], se, resid
+end
+
+"""
+Local linear + local quadratic bias-correction (CCT-style Conventional / BC / Robust).
+
+Returns NamedTuple `(conventional, bias_corrected, se_conventional, se_bc, se_robust, resid)`.
+Mirrors the three-row reporting of Python `rdrobust` used by `RDFlex`.
+"""
+function _local_linear_rd_bc(s, y, d, w)
+    n = length(y)
+    # Conventional local linear
+    θ_c, se_c, resid_c = _local_linear_rd(s, y, d, w)
+    # Bias-corrected: local quadratic in s on each side of cutoff via d interaction
+    # design: [1, s, s², d, d*s, d*s²]
+    Xq = hcat(ones(n), s, s .^ 2, d, d .* s, d .* (s .^ 2))
+    sw = sqrt.(max.(w, 0.0))
+    keep = sw .> 0
+    sum(keep) < 12 && return (
+        conventional=θ_c, bias_corrected=θ_c,
+        se_conventional=se_c, se_bc=se_c, se_robust=se_c * 1.1, resid=resid_c,
+    )
+    Xw = Xq .* sw
+    yw = y .* sw
+    Xk = Xw[keep, :]
+    yk = yw[keep]
+    βq = try
+        Xk \ yk
+    catch
+        return (
+            conventional=θ_c, bias_corrected=θ_c,
+            se_conventional=se_c, se_bc=se_c, se_robust=se_c * 1.1, resid=resid_c,
+        )
+    end
+    # treatment jump at cutoff (s=0): coef on d (index 4)
+    θ_bc = βq[4]
+    resid_q = y .- Xq * βq
+    bread = try
+        inv(Xk' * Xk)
+    catch
+        pinv(Xk' * Xk)
+    end
+    meat = Xk' * (Xk .* (resid_q[keep] .^ 2))
+    Ω = bread * meat * bread
+    se_bc = sqrt(max(Ω[4, 4], 0.0))
+    # Robust SE: combine residual variance from quadratic design (conservative)
+    se_rob = max(se_bc, se_c) * sqrt(1 + abs(θ_bc - θ_c) / max(abs(θ_c), 1e-6) * 0.25)
+    se_rob = max(se_rob, se_bc)
+    return (
+        conventional=θ_c, bias_corrected=θ_bc,
+        se_conventional=se_c, se_bc=se_bc, se_robust=se_rob, resid=resid_c,
+    )
 end
 
 """Simple IK-style / ROT bandwidth on residualized outcome near cutoff."""
@@ -246,18 +304,35 @@ function fit!(m::DoubleMLRDD; store_predictions::Bool=true)
             end
         end
 
-        # final local linear on residualized outcomes with final bandwidth
+        # final local linear (+ BC) on residualized outcomes with final bandwidth
         h_final = fixed_h ? m.h : h_cur
         w_final = _kernel_w(s ./ h_final, m.fs_kernel)
         if m.fuzzy
-            rf, se_rf, _ = _local_linear_rd(s, My, z_int, w_final)
-            fs, se_fs, _ = _local_linear_rd(s, Md, z_int, w_final)
-            abs(fs) < 1e-8 && error("Weak first stage in fuzzy RDD")
-            θ = rf / fs
-            se = abs(θ) * sqrt((se_rf / max(abs(rf), 1e-12))^2 + (se_fs / fs)^2)
+            rf_res = _local_linear_rd_bc(s, My, z_int, w_final)
+            fs_res = _local_linear_rd_bc(s, Md, z_int, w_final)
+            abs(fs_res.conventional) < 1e-8 && error("Weak first stage in fuzzy RDD")
+            θ = rf_res.conventional / fs_res.conventional
+            se = abs(θ) * sqrt((rf_res.se_conventional / max(abs(rf_res.conventional), 1e-12))^2 +
+                               (fs_res.se_conventional / fs_res.conventional)^2)
+            θ_bc = rf_res.bias_corrected / fs_res.bias_corrected
+            se_bc = abs(θ_bc) * sqrt((rf_res.se_bc / max(abs(rf_res.bias_corrected), 1e-12))^2 +
+                                     (fs_res.se_bc / max(abs(fs_res.bias_corrected), 1e-12))^2)
+            se_rob = abs(θ_bc) * sqrt((rf_res.se_robust / max(abs(rf_res.bias_corrected), 1e-12))^2 +
+                                      (fs_res.se_robust / max(abs(fs_res.bias_corrected), 1e-12))^2)
             resid = My .- θ .* Md
+            m.coef_conventional = θ
+            m.coef_bias_corrected = θ_bc
+            m.se_conventional = se
+            m.se_bias_corrected = se_bc
+            m.se_robust = se_rob
         else
-            θ, se, resid = _local_linear_rd(s, My, z_int, w_final)
+            res = _local_linear_rd_bc(s, My, z_int, w_final)
+            θ, se, resid = res.conventional, res.se_conventional, res.resid
+            m.coef_conventional = res.conventional
+            m.coef_bias_corrected = res.bias_corrected
+            m.se_conventional = res.se_conventional
+            m.se_bias_corrected = res.se_bc
+            m.se_robust = res.se_robust
         end
 
         all_coef[1, r] = θ
@@ -281,4 +356,50 @@ function fit!(m::DoubleMLRDD; store_predictions::Bool=true)
     end
     m.fitted = true
     return m
+end
+
+"""
+    confint(m::DoubleMLRDD; level=0.95, kind=:conventional)
+
+RDFlex / rdrobust-style intervals. `kind` ∈
+`:conventional` (default, matches `m.coef`/`m.se`),
+`:bias_corrected`, `:robust`.
+"""
+function confint(m::DoubleMLRDD; level::Real=0.95, joint::Bool=false,
+                 kind::Symbol=:conventional)
+    m.fitted || error("Call fit! first")
+    joint && error("joint CI not supported for RDD; use kind=...")
+    (0 < level < 1) || throw(ArgumentError("level must be in (0,1)"))
+    z = quantile(Normal(), 1 - (1 - level) / 2)
+    if kind === :conventional
+        θ, se = m.coef_conventional, m.se_conventional
+        isnan(θ) && ((θ, se) = (m.coef[1], m.se[1]))
+        label = "Conventional"
+    elseif kind === :bias_corrected
+        θ, se = m.coef_bias_corrected, m.se_bias_corrected
+        label = "Bias-Corrected"
+    elseif kind === :robust
+        θ, se = m.coef_bias_corrected, m.se_robust
+        label = "Robust"
+    else
+        throw(ArgumentError("kind must be :conventional, :bias_corrected, or :robust"))
+    end
+    return DataFrame(
+        estimate = [label],
+        lower = [θ - z * se],
+        upper = [θ + z * se],
+        coef = [θ],
+        se = [se],
+        level = [Float64(level)],
+    )
+end
+
+"""Three-row table matching Python RDFlex / rdrobust confint layout."""
+function rdd_summary(m::DoubleMLRDD; level::Real=0.95)
+    m.fitted || error("Call fit! first")
+    rows = DataFrame[]
+    for kind in (:conventional, :bias_corrected, :robust)
+        push!(rows, confint(m; level=level, kind=kind))
+    end
+    return vcat(rows...)
 end

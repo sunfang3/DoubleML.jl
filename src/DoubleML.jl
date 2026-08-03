@@ -80,12 +80,19 @@ export
     DoubleMLAPOS,
     causal_contrast,
     DoubleMLDID,
+    DoubleMLDIDBinary,
     DoubleMLDIDCS,
     DoubleMLDIDMulti,
     DoubleMLPanelData,
     att_table,
     aggregate,
     DIDAggregation,
+    aggregated_summary,
+    overall_summary,
+    aggregation_method_name,
+    aggregation_names,
+    overall_aggregation_weights,
+    n_aggregations,
     DoubleMLLPLR,
     DoubleMLPLPR,
     DoubleMLSSM,
@@ -119,10 +126,15 @@ export
     PSProcessorConfig,
     process_propensity,
     resolve_ps_processor,
+    check_score,
+    is_callable_score,
     # tuning
     tune!,
     tune_learner,
+    tune_learner_optuna,
+    tune_optuna!,
     TuneResult,
+    DMLOptunaResult,
     cv_score,
     # sensitivity
     sensitivity_analysis!,
@@ -161,7 +173,10 @@ export
     make_confounded_plr_data,
     make_confounded_irm_data,
     make_heterogeneous_data,
-    make_irm_data_discrete_treatments
+    make_irm_data_discrete_treatments,
+    fetch_401K,
+    fetch_bonus,
+    rdd_summary
 
 include("learners.jl")
 include("data.jl")

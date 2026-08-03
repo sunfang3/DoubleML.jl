@@ -608,3 +608,158 @@ function make_irm_data_discrete_treatments(; n_obs::Int=200, n_levels::Int=3,
     oracle = (d_cont=d_cont, theta_of_d=θd, y_0=y0, y_1=y1, z=z)
     return (x=Xobs, y=y, d=d, d_cont=d_cont, oracle_values=oracle, data=data)
 end
+
+# ---- Real datasets (Python doubleml.datasets.fetch_*) -----------------------
+
+function _dml_cache_dir()
+    d = joinpath(homedir(), ".julia", "doubleml_data")
+    isdir(d) || mkpath(d)
+    return d
+end
+
+"""
+    fetch_401K(; return_type=:DoubleMLData, force_download=false) -> DoubleMLData | DataFrame
+
+401(k) wealth / participation data (Abadie 2003; Chernozhukov et al. 2018).
+
+Downloads SIPP 1991 from the DMLonGitHub repository (same URL as Python DoubleML)
+and caches a CSV under `~/.julia/doubleml_data/`.
+
+Requires network access on first call; uses Python+pandas to convert Stata if
+available, otherwise errors with a clear message.
+"""
+function fetch_401K(; return_type::Symbol=:DoubleMLData, force_download::Bool=false)
+    cache = joinpath(_dml_cache_dir(), "sipp1991.csv")
+    if force_download || !isfile(cache)
+        _fetch_401k_to_csv(cache)
+    end
+    df = _read_csv_simple(cache)
+    y_col = "net_tfa"
+    d_cols = ["e401"]
+    x_cols = ["age", "inc", "educ", "fsize", "marr", "twoearn", "db", "pira", "hown"]
+    if return_type === :DataFrame
+        return df
+    end
+    return DoubleMLData(df; y_col=y_col, d_cols=d_cols, x_cols=x_cols)
+end
+
+function _fetch_401k_to_csv(dest::AbstractString)
+    url = "https://github.com/VC2015/DMLonGitHub/raw/master/sipp1991.dta"
+    # Prefer python/pandas (matches Python DoubleML pipeline)
+    py = Sys.which("python3")
+    if py !== nothing
+        code = """
+import sys
+try:
+    import pandas as pd
+except ImportError:
+    sys.exit(2)
+df = pd.read_stata($(repr(url)))
+df.to_csv($(repr(dest)), index=False)
+print("wrote", $(repr(dest)), "nrows", len(df))
+"""
+        try
+            run(`$py -c $code`)
+            isfile(dest) && return dest
+        catch e
+            @warn "python fetch_401K failed" exception=e
+        end
+    end
+    error("fetch_401K requires network + python3 with pandas (for Stata read). " *
+          "Install pandas or place a CSV at $dest with columns net_tfa, e401, age, ...")
+end
+
+"""
+    fetch_bonus(; return_type=:DoubleMLData, force_download=false) -> DoubleMLData | DataFrame
+
+Pennsylvania Reemployment Bonus experiment (Bilias 2000; Chernozhukov et al. 2018).
+
+Same sample construction as Python: keep `tg ∈ {0,4}`, map 4→1, log `inuidur1`,
+and expand `dep` into dummies.
+"""
+function fetch_bonus(; return_type::Symbol=:DoubleMLData, force_download::Bool=false)
+    cache = joinpath(_dml_cache_dir(), "penn_jae_processed.csv")
+    if force_download || !isfile(cache)
+        _fetch_bonus_to_csv(cache)
+    end
+    df = _read_csv_simple(cache)
+    y_col = "inuidur1"
+    d_cols = ["tg"]
+    x_cols = ["female", "black", "othrace", "dep1", "dep2", "q2", "q3", "q4", "q5", "q6",
+              "agelt35", "agegt54", "durable", "lusd", "husd"]
+    # keep only columns that exist
+    x_cols = [c for c in x_cols if c in names(df)]
+    if return_type === :DataFrame
+        return df
+    end
+    return DoubleMLData(df; y_col=y_col, d_cols=d_cols, x_cols=x_cols)
+end
+
+function _fetch_bonus_to_csv(dest::AbstractString)
+    url = "https://raw.githubusercontent.com/VC2015/DMLonGitHub/master/penn_jae.dat"
+    py = Sys.which("python3")
+    if py !== nothing
+        code = """
+import sys
+try:
+    import pandas as pd
+    import numpy as np
+except ImportError:
+    sys.exit(2)
+raw = pd.read_csv($(repr(url)), sep=r"\\s+")
+ind = (raw["tg"] == 0) | (raw["tg"] == 4)
+data = raw.loc[ind].copy()
+data.reset_index(drop=True, inplace=True)
+data["tg"] = data["tg"].replace(4, 1)
+data["inuidur1"] = np.log(data["inuidur1"].clip(lower=1e-8))
+# dep dummies
+if "dep" in data.columns:
+    data["dep1"] = (data["dep"] == 1).astype(float)
+    data["dep2"] = (data["dep"] == 2).astype(float)
+data.to_csv($(repr(dest)), index=False)
+print("wrote", $(repr(dest)), "nrows", len(data))
+"""
+        try
+            run(`$py -c $code`)
+            isfile(dest) && return dest
+        catch e
+            @warn "python fetch_bonus failed" exception=e
+        end
+    end
+    error("fetch_bonus requires network + python3 with pandas. " *
+          "Place a processed CSV at $dest if offline.")
+end
+
+"""Minimal CSV reader using only DataFrames/stdlib (header + comma-separated)."""
+function _read_csv_simple(path::AbstractString)
+    lines = readlines(path)
+    isempty(lines) && error("empty CSV $path")
+    header = split(strip(lines[1]), ',')
+    cols = String.(header)
+    data = [String[] for _ in cols]
+    for line in lines[2:end]
+        isempty(strip(line)) && continue
+        parts = split(line, ',')
+        length(parts) == length(cols) || continue
+        for (j, p) in enumerate(parts)
+            push!(data[j], p)
+        end
+    end
+    df = DataFrame()
+    for (j, c) in enumerate(cols)
+        vals = data[j]
+        # try parse float
+        parsed = Vector{Float64}(undef, length(vals))
+        ok = true
+        for (i, v) in enumerate(vals)
+            x = tryparse(Float64, v)
+            if x === nothing
+                ok = false
+                break
+            end
+            parsed[i] = x
+        end
+        df[!, Symbol(c)] = ok ? parsed : vals
+    end
+    return df
+end

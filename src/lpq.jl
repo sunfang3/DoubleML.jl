@@ -37,6 +37,7 @@ mutable struct DoubleMLLPQ <: AbstractDoubleML
     n_folds::Int
     n_rep::Int
     trimming_threshold::Float64
+    ps_processor::PSProcessor
     normalize_ipw::Bool
     smpls::Vector
     coef::Vector{Float64}
@@ -58,6 +59,7 @@ function DoubleMLLPQ(data::DoubleMLData, ml_g, ml_m;
                      n_folds::Int=5,
                      n_rep::Int=1,
                      trimming_threshold::Real=1e-2,
+                     ps_processor::Union{Nothing,PSProcessor}=nothing,
                      normalize_ipw::Bool=true,
                      draw_sample_splitting::Bool=true,
                      rng::AbstractRNG=Random.default_rng())
@@ -77,7 +79,9 @@ function DoubleMLLPQ(data::DoubleMLData, ml_g, ml_m;
     tname = "LPQ(d=$treatment,τ=$(quantile))"
     return DoubleMLLPQ(
         data, ml_g, ml_m, Int(treatment), Float64(quantile),
-        n_folds, n_rep, Float64(trimming_threshold), normalize_ipw, smpls,
+        n_folds, n_rep, Float64(trimming_threshold),
+        resolve_ps_processor(ps_processor, trimming_threshold),
+        normalize_ipw, smpls,
         Float64[], Float64[],
         zeros(1, n_rep), zeros(1, n_rep),
         fill(NaN, n, n_rep, 1), fill(NaN, n, n_rep, 1),
@@ -242,7 +246,7 @@ function fit!(m::DoubleMLLPQ; store_predictions::Bool=true)
     z = instrument(data)
     n = n_obs(data)
     n_rep = m.n_rep
-    ε = m.trimming_threshold
+    ε = m.ps_processor.clipping_threshold
     τ = m.quantile
 
     if isempty(m.smpls)

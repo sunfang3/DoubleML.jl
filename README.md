@@ -122,8 +122,13 @@ model.confint()                →    confint(model)
 | **tune! SSM/DID/PLPR** | Grid/random hyperparameter search | ✅ |
 | **sensitivity_contour / sensitivity_plot** | Numerical cf_y × cf_d grid (plot-ready DataFrame; plot alias) | ✅ |
 | **Framework sensitivity** | `sensitivity_analysis!` / contour / summary on `construct_framework` (PLR/IRM) | ✅ |
-| **PSProcessor** | Propensity clip config (Python `PSProcessor` / `PSProcessorConfig`) on IRM | ✅ |
+| **PSProcessor** | Propensity clip config on IRM / DID / DIDCS / IIVM / SSM / QTE / multi-DID | ✅ |
 | **Confounded / hetero DGPs** | `make_confounded_plr_data`, `make_confounded_irm_data`, `make_heterogeneous_data`, discrete treatments | ✅ |
+| **DIDBinary / DIDAggregation** | Alias + `aggregated_summary` / `overall_summary` / `plot_effects` / `confint` | ✅ |
+| **Callable scores** | PLR / IRM `score::Function → (ψ_a, ψ_b)` | ✅ |
+| **Optuna-style tune** | `tune_optuna!` / `search_mode=:optuna` (TPE-lite, no Optuna dep) | ✅ |
+| **RDFlex BC/Robust** | Conventional + bias-corrected + robust SE (`rdd_summary`) | ✅ |
+| **fetch_401K / fetch_bonus** | Real datasets (network + pandas on first download) | ✅ |
 | **SSM** | Sample selection (`missing-at-random` / basic `nonignorable`) | ✅ |
 | **RDD** | Sharp/fuzzy RD with ML residualization + local linear | ✅ |
 | **Cluster SE** | One-way post-hoc + **cluster-in-fit** (1/2-way) for PLR/IRM | ✅ |

@@ -31,6 +31,7 @@ mutable struct DoubleMLQTE <: AbstractDoubleML
     n_folds::Int
     n_rep::Int
     trimming_threshold::Float64
+    ps_processor::PSProcessor
     normalize_ipw::Bool
     smpls::Vector
     coef::Vector{Float64}
@@ -54,6 +55,7 @@ function DoubleMLQTE(data::DoubleMLData, ml_g, ml_m;
                      n_folds::Int=5,
                      n_rep::Int=1,
                      trimming_threshold::Real=1e-2,
+                     ps_processor::Union{Nothing,PSProcessor}=nothing,
                      normalize_ipw::Bool=true,
                      draw_sample_splitting::Bool=true,
                      rng::AbstractRNG=Random.default_rng())
@@ -78,9 +80,10 @@ function DoubleMLQTE(data::DoubleMLData, ml_g, ml_m;
     prefix = sc == "PQ" ? "QTE" : sc == "LPQ" ? "LQTE" : "CVaR-TE"
     names = ["$prefix(τ=$τ)" for τ in qs]
 
+    psp = resolve_ps_processor(ps_processor, trimming_threshold)
     return DoubleMLQTE(
         data, ml_g, ml_m, qs, sc, n_folds, n_rep,
-        Float64(trimming_threshold), normalize_ipw, smpls,
+        Float64(trimming_threshold), psp, normalize_ipw, smpls,
         Float64[], Float64[],
         zeros(n_q, n_rep), zeros(n_q, n_rep),
         fill(NaN, n, n_rep, n_q),
@@ -99,6 +102,7 @@ function _make_pair_models(m::DoubleMLQTE, τ::Float64)
         n_folds=m.n_folds,
         n_rep=m.n_rep,
         trimming_threshold=m.trimming_threshold,
+        ps_processor=m.ps_processor,
         normalize_ipw=m.normalize_ipw,
         draw_sample_splitting=false,
         rng=copy(m.rng),

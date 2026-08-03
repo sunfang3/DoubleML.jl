@@ -368,6 +368,31 @@ function Base.show(io::IO, m::AbstractDoubleML)
     end
 end
 
+# ---- Score validation (Python `_check_score`, allow callables) ----
+
+"""
+Validate `score`: either a string in `valid` or a callable (if `allow_callable`).
+
+Callable scores must return `(psi_a, psi_b)` linear score elements with
+signature depending on the model (see PLR / IRM docs).
+"""
+function check_score(score, valid::Tuple{Vararg{AbstractString}}; allow_callable::Bool=true)
+    if score isa AbstractString
+        s = String(score)
+        s in valid || throw(ArgumentError("score must be one of $valid (got \"$s\")"))
+        return s
+    elseif allow_callable && score isa Function
+        return score
+    else
+        throw(ArgumentError(
+            "score must be one of $valid" *
+            (allow_callable ? " or a Function returning (psi_a, psi_b)" : "") *
+            "; got $(typeof(score))"))
+    end
+end
+
+is_callable_score(score) = score isa Function
+
 # ---- IPW helpers (shared by IRM / IIVM / PQ / …) ----
 
 _clip_ps(m, ε) = clamp.(m, ε, 1 - ε)

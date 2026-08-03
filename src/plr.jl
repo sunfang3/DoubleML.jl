@@ -13,8 +13,10 @@ Supports multiple treatment columns (`data.d_mat`) and cluster-in-fit SE.
 # Scores
 - `"partialling out"` (default): residual-on-residual
 - `"IV-type"`: uses an additional `ml_g` for `E[Y − Dθ | X]`
+- **callable**: `score(y, d, preds) -> (psi_a, psi_b)` where
+  `preds = (l_hat, m_hat, g_hat)` (`g_hat` may be `nothing`)
 
-Mirrors Python `doubleml.DoubleMLPLR`.
+Mirrors Python `doubleml.DoubleMLPLR` (including callable scores).
 """
 mutable struct DoubleMLPLR <: AbstractDoubleML
     data::DoubleMLData
@@ -23,7 +25,7 @@ mutable struct DoubleMLPLR <: AbstractDoubleML
     ml_g::Any
     n_folds::Int
     n_rep::Int
-    score::String
+    score::Any   # String or Function
     smpls::Vector
     smpls_cluster::Union{Nothing,Vector}
     n_folds_per_cluster::Int
@@ -51,11 +53,10 @@ function DoubleMLPLR(data::DoubleMLData, ml_l, ml_m;
                      ml_g=nothing,
                      n_folds::Int=5,
                      n_rep::Int=1,
-                     score::AbstractString="partialling out",
+                     score="partialling out",
                      draw_sample_splitting::Bool=true,
                      rng::AbstractRNG=Random.default_rng())
-    score in ("partialling out", "IV-type") ||
-        throw(ArgumentError("score must be \"partialling out\" or \"IV-type\""))
+    score = check_score(score, ("partialling out", "IV-type"); allow_callable=true)
     n_folds >= 2 || throw(ArgumentError("n_folds must be ≥ 2"))
     n_rep >= 1 || throw(ArgumentError("n_rep must be ≥ 1"))
 
@@ -74,7 +75,7 @@ function DoubleMLPLR(data::DoubleMLData, ml_l, ml_m;
     end
 
     return DoubleMLPLR(
-        data, ml_l, ml_m, ml_g, n_folds, n_rep, String(score), smpls,
+        data, ml_l, ml_m, ml_g, n_folds, n_rep, score, smpls,
         smpls_cluster, n_fpc, nothing, is_cl, nothing,
         Float64[], Float64[],
         zeros(n_t, n_rep), zeros(n_t, n_rep),
@@ -156,7 +157,22 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true,
             m̂ = something(_apply_external_pred(ext_j, "ml_m", r, n),
                            cross_fit_predict(ml_m, X, d, folds; classifier=use_clf_m))
 
-            if m.score == "IV-type"
+            ĝ = nothing
+            if is_callable_score(m.score)
+                # optional IV-type nuisance for callables that need g
+                if ml_g !== nothing
+                    v0 = d .- m̂
+                    u0 = y .- ℓ̂
+                    θ0 = sum(v0 .* u0) / max(sum(v0 .* v0), eps())
+                    ĝ = something(_apply_external_pred(ext_j, "ml_g", r, n),
+                                   cross_fit_predict(ml_g, X, y .- θ0 .* d, folds; classifier=false))
+                    j == 1 && (g_preds[:, r] = ĝ)
+                end
+                preds = (l_hat=ℓ̂, m_hat=m̂, g_hat=ĝ)
+                psi_a, psi_b = m.score(y, d, preds)
+                length(psi_a) == n && length(psi_b) == n ||
+                    throw(DimensionMismatch("callable score must return length-n vectors"))
+            elseif m.score == "IV-type"
                 v = d .- m̂
                 u = y .- ℓ̂
                 θ0 = sum(v .* u) / sum(v .* v)
@@ -190,16 +206,18 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true,
             if j == 1
                 l_preds[:, r] = ℓ̂
                 m_preds[:, r] = m̂
-                if m.score == "IV-type"
-                    σ2, ν2, ps, pn, rr = sensitivity_elements_plr(y, d, g_preds[:, r], m̂, θ; score="IV-type")
-                else
-                    σ2, ν2, ps, pn, rr = sensitivity_elements_plr(y, d, ℓ̂, m̂, θ; score="partialling out")
+                if !is_callable_score(m.score)
+                    if m.score == "IV-type"
+                        σ2, ν2, ps, pn, rr = sensitivity_elements_plr(y, d, g_preds[:, r], m̂, θ; score="IV-type")
+                    else
+                        σ2, ν2, ps, pn, rr = sensitivity_elements_plr(y, d, ℓ̂, m̂, θ; score="partialling out")
+                    end
+                    sigma2_v[r] = σ2
+                    nu2_v[r] = ν2
+                    psi_s[:, r] = ps
+                    psi_n[:, r] = pn
+                    rr_m[:, r] = rr
                 end
-                sigma2_v[r] = σ2
-                nu2_v[r] = ν2
-                psi_s[:, r] = ps
-                psi_n[:, r] = pn
-                rr_m[:, r] = rr
             end
         end
     end
@@ -214,7 +232,8 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true,
     m.var_scaling = var_scaling
     m.treat_names = copy(data.d_cols)
     m.boot = nothing
-    m.sens_elements = SensitivityElements(sigma2_v, nu2_v, psi_s, psi_n, rr_m)
+    m.sens_elements = is_callable_score(m.score) ? nothing :
+        SensitivityElements(sigma2_v, nu2_v, psi_s, psi_n, rr_m)
     m.sensitivity = nothing
     if is_cl
         m.cluster_dict = (
@@ -226,7 +245,7 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true,
     end
     if store_predictions
         m.predictions = Dict("ml_l" => l_preds, "ml_m" => m_preds)
-        if m.score == "IV-type"
+        if m.score == "IV-type" || (is_callable_score(m.score) && any(isfinite, g_preds))
             m.predictions["ml_g"] = g_preds
         end
     end

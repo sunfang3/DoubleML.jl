@@ -21,6 +21,7 @@ mutable struct DoubleMLIIVM <: AbstractDoubleML
     n_rep::Int
     score::String
     trimming_threshold::Float64
+    ps_processor::PSProcessor
     always_takers::Bool
     never_takers::Bool
     normalize_ipw::Bool
@@ -50,6 +51,7 @@ function DoubleMLIIVM(data::DoubleMLData, ml_g, ml_m, ml_r;
                       n_rep::Int=1,
                       score::AbstractString="LATE",
                       trimming_threshold::Real=1e-2,
+                      ps_processor::Union{Nothing,PSProcessor}=nothing,
                       always_takers::Bool=true,
                       never_takers::Bool=true,
                       subgroups=nothing,
@@ -95,9 +97,10 @@ function DoubleMLIIVM(data::DoubleMLData, ml_g, ml_m, ml_r;
         Vector{Any}(), nothing, n_folds
     end
 
+    psp = resolve_ps_processor(ps_processor, trimming_threshold)
     return DoubleMLIIVM(
         data, ml_g, ml_m, ml_r, n_folds, n_rep, String(score),
-        Float64(trimming_threshold), always_takers, never_takers, normalize_ipw,
+        Float64(trimming_threshold), psp, always_takers, never_takers, normalize_ipw,
         smpls, smpls_cluster, n_fpc, nothing, is_cl, nothing,
         Float64[], Float64[],
         zeros(1, n_rep), zeros(1, n_rep),
@@ -134,7 +137,6 @@ function fit!(m::DoubleMLIIVM; store_predictions::Bool=true,
     z = vec(data.z)
     n = n_obs(data)
     n_rep = m.n_rep
-    ε = m.trimming_threshold
     is_cl = is_cluster_data(data)
     tname = data.d_col
     ml_g = _learner_with_params(m, m.ml_g, "ml_g", tname)
@@ -170,11 +172,11 @@ function fit!(m::DoubleMLIIVM; store_predictions::Bool=true,
                        _cross_fit_conditional(ml_g, X, y, z1, folds; classifier=false))
         m̂ = something(_apply_external_pred(external_predictions, "ml_m", rep, n),
                        cross_fit_predict(ml_m, X, z, folds; classifier=is_classifier(ml_m)))
-        m̂ = clamp.(m̂, ε, 1 - ε)
+        m̂ = process_propensity(m̂, m.ps_processor)
         # normalize IPW using instrument Z (propensity m = P(Z=1|X))
         if m.normalize_ipw
             m̂ = _normalize_ipw(m̂, z)
-            m̂ = clamp.(m̂, ε, 1 - ε)
+            m̂ = process_propensity(m̂, m.ps_processor)
         end
 
         if m.always_takers

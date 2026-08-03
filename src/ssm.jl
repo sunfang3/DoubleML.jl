@@ -31,6 +31,7 @@ mutable struct DoubleMLSSM <: AbstractDoubleML
     n_rep::Int
     score::String
     trimming_threshold::Float64
+    ps_processor::PSProcessor
     normalize_ipw::Bool
     smpls::Vector
     coef::Vector{Float64}
@@ -53,6 +54,7 @@ function DoubleMLSSM(data::DoubleMLData, ml_g, ml_m, ml_pi;
                      n_rep::Int=1,
                      score::AbstractString="missing-at-random",
                      trimming_threshold::Real=1e-2,
+                     ps_processor::Union{Nothing,PSProcessor}=nothing,
                      normalize_ipw::Bool=false,
                      draw_sample_splitting::Bool=true,
                      rng::AbstractRNG=Random.default_rng())
@@ -70,9 +72,10 @@ function DoubleMLSSM(data::DoubleMLData, ml_g, ml_m, ml_pi;
         make_repeated_folds(n_obs(data), n_folds, n_rep; rng=rng) :
         Vector{Any}()
     n = n_obs(data)
+    psp = resolve_ps_processor(ps_processor, trimming_threshold)
     return DoubleMLSSM(
         data, ml_g, ml_m, ml_pi, n_folds, n_rep, sc, Float64(trimming_threshold),
-        normalize_ipw, smpls,
+        psp, normalize_ipw, smpls,
         Float64[], Float64[],
         zeros(1, n_rep), zeros(1, n_rep),
         fill(NaN, n, n_rep, 1), fill(NaN, n, n_rep, 1),
@@ -169,7 +172,7 @@ function fit!(m::DoubleMLSSM; store_predictions::Bool=true, store_models::Bool=f
     X, y, d, s = data.x, data.y, data.d, data.s
     n = n_obs(data)
     n_rep = m.n_rep
-    ε = m.trimming_threshold
+    ε = m.ps_processor.clipping_threshold
 
     y_safe = copy(y)
     for i in 1:n
@@ -206,11 +209,11 @@ function fit!(m::DoubleMLSSM; store_predictions::Bool=true, store_models::Bool=f
                 store_models=store_models,
             )
         end
-        π̂ = clamp.(π̂, ε, 1 - ε)
-        m̂ = clamp.(m̂, ε, 1 - ε)
+        π̂ = process_propensity(π̂, m.ps_processor)
+        m̂ = process_propensity(m̂, m.ps_processor)
         if m.normalize_ipw
             m̂ = _normalize_ipw(m̂, d)
-            m̂ = clamp.(m̂, ε, 1 - ε)
+            m̂ = process_propensity(m̂, m.ps_processor)
         end
 
         dt = d .== 1

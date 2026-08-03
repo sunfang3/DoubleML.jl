@@ -13,7 +13,7 @@ mutable struct DoubleMLIRM <: AbstractDoubleML
     ml_m::Any
     n_folds::Int
     n_rep::Int
-    score::String
+    score::Any   # String or Function
     trimming_threshold::Float64
     ps_processor::PSProcessor
     weights::Union{Nothing,Vector{Float64}}
@@ -43,14 +43,13 @@ end
 function DoubleMLIRM(data::DoubleMLData, ml_g, ml_m;
                      n_folds::Int=5,
                      n_rep::Int=1,
-                     score::AbstractString="ATE",
+                     score="ATE",
                      trimming_threshold::Real=1e-12,
                      ps_processor::Union{Nothing,PSProcessor}=nothing,
                      weights::Union{Nothing,AbstractVector}=nothing,
                      draw_sample_splitting::Bool=true,
                      rng::AbstractRNG=Random.default_rng())
-    score in ("ATE", "ATTE") ||
-        throw(ArgumentError("score must be \"ATE\" or \"ATTE\""))
+    score = check_score(score, ("ATE", "ATTE"); allow_callable=true)
     for j in 1:n_treat(data)
         dj = @view data.d_mat[:, j]
         Set(unique(dj)) ⊆ Set([0.0, 1.0]) ||
@@ -75,7 +74,7 @@ function DoubleMLIRM(data::DoubleMLData, ml_g, ml_m;
     psp = resolve_ps_processor(ps_processor, trimming_threshold)
 
     return DoubleMLIRM(
-        data, ml_g, ml_m, n_folds, n_rep, String(score),
+        data, ml_g, ml_m, n_folds, n_rep, score,
         Float64(trimming_threshold), psp, w, smpls,
         smpls_cluster, n_fpc, nothing, is_cl, nothing,
         Float64[], Float64[],
@@ -194,7 +193,11 @@ function fit!(m::DoubleMLIRM; store_predictions::Bool=true,
                 models_store["ml_m"] = m_models
             end
 
-            if m.score == "ATE"
+            if is_callable_score(m.score)
+                psi_a, psi_b = m.score(y, d, (g0=g0, g1=g1, m_hat=m̂))
+                length(psi_a) == n && length(psi_b) == n ||
+                    throw(DimensionMismatch("callable score must return length-n vectors"))
+            elseif m.score == "ATE"
                 dr = (g1 .- g0) .+
                      d .* (y .- g1) ./ m̂ .-
                      (1 .- d) .* (y .- g0) ./ (1 .- m̂)
@@ -231,12 +234,14 @@ function fit!(m::DoubleMLIRM; store_predictions::Bool=true,
                 g0_preds[:, r] = g0
                 g1_preds[:, r] = g1
                 m_preds[:, r] = m̂
-                σ2, ν2, ps, pn, rr = sensitivity_elements_irm_ate(y, d, g0, g1, m̂)
-                sigma2_v[r] = σ2
-                nu2_v[r] = ν2
-                psi_s[:, r] = ps
-                psi_n[:, r] = pn
-                rr_m[:, r] = rr
+                if !is_callable_score(m.score)
+                    σ2, ν2, ps, pn, rr = sensitivity_elements_irm_ate(y, d, g0, g1, m̂)
+                    sigma2_v[r] = σ2
+                    nu2_v[r] = ν2
+                    psi_s[:, r] = ps
+                    psi_n[:, r] = pn
+                    rr_m[:, r] = rr
+                end
             end
         end
     end
@@ -248,7 +253,8 @@ function fit!(m::DoubleMLIRM; store_predictions::Bool=true,
     m.var_scaling = var_scaling
     m.treat_names = copy(data.d_cols)
     m.boot = nothing
-    m.sens_elements = SensitivityElements(sigma2_v, nu2_v, psi_s, psi_n, rr_m)
+    m.sens_elements = is_callable_score(m.score) ? nothing :
+        SensitivityElements(sigma2_v, nu2_v, psi_s, psi_n, rr_m)
     m.sensitivity = nothing
     if is_cl
         m.cluster_dict = (

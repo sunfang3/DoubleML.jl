@@ -85,8 +85,23 @@ end
 
 n_obs(data::DoubleMLData) = length(data.y)
 n_features(data::DoubleMLData) = size(data.x, 2)
+n_instr(data::DoubleMLData) = data.z === nothing ? 0 : size(data.z, 2)
+
+"""Return instrument matrix as `n × k`, or throw if absent."""
+function instruments(data::DoubleMLData)
+    data.z === nothing && error("No instruments in DoubleMLData")
+    return data.z
+end
+
+"""Single instrument as a vector (errors if not exactly one)."""
+function instrument(data::DoubleMLData)
+    Z = instruments(data)
+    size(Z, 2) == 1 || error("Expected a single instrument, got $(size(Z, 2))")
+    return vec(Z)
+end
 
 function Base.show(io::IO, data::DoubleMLData)
+    zinfo = data.z === nothing ? "none" : join(data.z_cols, ",")
     print(io, "DoubleMLData(n=$(n_obs(data)), p=$(n_features(data)), ",
-          "y=$(data.y_col), d=$(data.d_col))")
+          "y=$(data.y_col), d=$(data.d_col), z=$zinfo)")
 end

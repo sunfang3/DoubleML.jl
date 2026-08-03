@@ -85,4 +85,66 @@ using Statistics
         @test isfinite(dml.coef[1])
         @test dml.se[1] > 0
     end
+
+    @testset "PLIV recovers theta" begin
+        θ_true = 0.5
+        data = make_pliv_data(n_obs=1200, dim_x=8, dim_z=1, theta=θ_true; seed=99)
+        @test n_instr(data) == 1
+        ml = RidgeLearner(α=0.5)
+        dml = DoubleMLPLIV(data, clone(ml), clone(ml), clone(ml); n_folds=5, rng=MersenneTwister(99))
+        fit!(dml)
+        @test abs(dml.coef[1] - θ_true) < 0.2
+        @test dml.se[1] > 0
+        s = summary_table(dml)
+        @test s.coef[1] ≈ dml.coef[1]
+    end
+
+    @testset "PLIV multi-instrument" begin
+        θ_true = 0.5
+        data = make_pliv_data(n_obs=1500, dim_x=6, dim_z=3, theta=θ_true; seed=123)
+        @test n_instr(data) == 3
+        ml = RidgeLearner(α=0.5)
+        dml = DoubleMLPLIV(data, clone(ml), clone(ml), clone(ml); n_folds=5, rng=MersenneTwister(123))
+        fit!(dml)
+        @test abs(dml.coef[1] - θ_true) < 0.25
+        @test isfinite(dml.se[1])
+    end
+
+    @testset "PLIV IV-type score" begin
+        data = make_pliv_data(n_obs=1000, dim_x=5, dim_z=1, theta=0.5; seed=7)
+        ml = RidgeLearner(α=0.5)
+        dml = DoubleMLPLIV(data, clone(ml), clone(ml), clone(ml);
+                           ml_g=clone(ml), score="IV-type", n_folds=5, rng=MersenneTwister(7))
+        fit!(dml)
+        @test isfinite(dml.coef[1])
+        @test dml.se[1] > 0
+    end
+
+    @testset "IIVM recovers LATE" begin
+        θ_true = 0.5
+        data = make_iivm_data(n_obs=2000, dim_x=5, theta=θ_true; seed=314)
+        @test n_instr(data) == 1
+        dml = DoubleMLIIVM(
+            data,
+            RidgeLearner(α=0.5),
+            LogisticRegressionLearner(α=0.5),
+            LogisticRegressionLearner(α=0.5);
+            n_folds=5,
+            trimming_threshold=0.05,
+            rng=MersenneTwister(314),
+        )
+        fit!(dml)
+        # LATE recovery is noisier; allow a wider band
+        @test abs(dml.coef[1] - θ_true) < 0.45
+        @test dml.se[1] > 0
+        @test isfinite(dml.coef[1])
+    end
+
+    @testset "DataFrame with instruments" begin
+        df = make_pliv_data(n_obs=200, dim_x=3, dim_z=1, theta=0.5;
+                            return_type=:DataFrame, seed=1)
+        data = DoubleMLData(df; y_col="y", d_cols="d", z_cols="Z1")
+        @test n_instr(data) == 1
+        @test data.z_cols == ["Z1"]
+    end
 end

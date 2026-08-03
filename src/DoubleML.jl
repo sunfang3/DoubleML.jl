@@ -7,6 +7,8 @@ API-aligned with the Python package [DoubleML](https://docs.doubleml.org/).
 # Models
 - [`DoubleMLPLR`](@ref) — partially linear regression
 - [`DoubleMLIRM`](@ref) — interactive regression model (binary treatment ATE)
+- [`DoubleMLPLIV`](@ref) — partially linear IV regression
+- [`DoubleMLIIVM`](@ref) — interactive IV model (binary D, binary Z → LATE)
 
 # Learners
 Duck-typed nuisance learners: any object supporting `fit!`, `predict` / `predict_proba`,
@@ -40,6 +42,7 @@ using DecisionTree
 export
     # data
     DoubleMLData,
+    n_instr,
     # learners
     AbstractLearner,
     RidgeLearner,
@@ -55,12 +58,16 @@ export
     AbstractDoubleML,
     DoubleMLPLR,
     DoubleMLIRM,
+    DoubleMLPLIV,
+    DoubleMLIIVM,
     confint,
     summary_table,
     dml_summary,
     # datasets
     make_plr_data,
-    make_irm_data
+    make_irm_data,
+    make_pliv_data,
+    make_iivm_data
 
 include("learners.jl")
 include("data.jl")
@@ -68,6 +75,8 @@ include("sample_splitting.jl")
 include("base.jl")
 include("plr.jl")
 include("irm.jl")
+include("pliv.jl")
+include("iivm.jl")
 include("datasets.jl")
 
 end # module

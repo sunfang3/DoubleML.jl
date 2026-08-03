@@ -11,7 +11,7 @@ Python package [DoubleML](https://docs.doubleml.org/)
 
 | Goal | Choice |
 |------|--------|
-| API familiarity | Mirror Python `DoubleMLData` / `DoubleMLPLR` / `DoubleMLIRM` / `fit` / `summary` / `confint` |
+| API familiarity | Mirror Python `DoubleMLData` / PLR / IRM / **PLIV** / **IIVM** / `fit` / `summary_table` / `confint` |
 | Long-term ML stack | Duck-typed learners + **DecisionTree.jl** random forests (pure Julia, widely used) |
 | Lightweight core | Closed-form **ridge** & **logistic** (no heavyweight MLJ install required to run) |
 | Extensibility | Any object with `fit!` / `predict` / `clone` (and `predict_proba` for classifiers) |
@@ -49,6 +49,25 @@ irm = DoubleMLIRM(
 )
 fit!(irm)
 summary_table(irm)
+
+# --- PLIV (partially linear IV) ---
+data_pliv = make_pliv_data(n_obs=800, dim_x=15, dim_z=1, theta=0.5; seed=99)
+ml = RidgeLearner(α=0.5)
+pliv = DoubleMLPLIV(data_pliv, clone(ml), clone(ml), clone(ml); n_folds=5)
+fit!(pliv)
+summary_table(pliv)
+
+# --- IIVM (LATE: binary D, binary Z) ---
+data_iivm = make_iivm_data(n_obs=1500, dim_x=8, theta=0.5; seed=7)
+iivm = DoubleMLIIVM(
+    data_iivm,
+    RidgeLearner(α=0.5),
+    LogisticRegressionLearner(α=0.5),
+    LogisticRegressionLearner(α=0.5);
+    n_folds=5,
+)
+fit!(iivm)
+summary_table(iivm)
 ```
 
 ## Architecture (Python → Julia)
@@ -60,6 +79,8 @@ doubleml.DoubleMLData          →    DoubleMLData
 doubleml.DoubleML  (ABC)       →    AbstractDoubleML
 doubleml.DoubleMLPLR           →    DoubleMLPLR
 doubleml.DoubleMLIRM           →    DoubleMLIRM
+doubleml.DoubleMLPLIV          →    DoubleMLPLIV
+doubleml.DoubleMLIIVM          →    DoubleMLIIVM
 sklearn estimator              →    fit! / predict / predict_proba / clone
 model.fit()                    →    fit!(model)
 model.summary                  →    summary_table(model)
@@ -74,7 +95,9 @@ model.confint()                →    confint(model)
 | PLR | `IV-type` | ✅ |
 | IRM | `ATE` (doubly robust) | ✅ |
 | IRM | `ATTE` | ✅ (experimental) |
-| PLIV / IIVM | — | ⏳ planned |
+| **PLIV** | `partialling out` (1 or multi Z) | ✅ |
+| **PLIV** | `IV-type` (single Z) | ✅ |
+| **IIVM** | `LATE` | ✅ |
 | Multiplier bootstrap | — | ⏳ planned |
 | Hyperparameter tuning | — | ⏳ planned |
 
@@ -114,10 +137,30 @@ DoubleML/
 │   ├── base.jl          # coef aggregation, SE, confint, summary
 │   ├── plr.jl
 │   ├── irm.jl
+│   ├── pliv.jl          # partially linear IV
+│   ├── iivm.jl          # interactive IV (LATE)
 │   └── datasets.jl
 ├── test/runtests.jl
 ├── examples/plr_irm_demo.jl
 └── README.md
+```
+
+## IV models in brief
+
+**PLIV** — continuous treatment, instrument(s) `Z` in `DoubleMLData`:
+
+```julia
+data = make_pliv_data(n_obs=1000, dim_z=1, theta=0.5; seed=1)
+# or from a DataFrame:
+# DoubleMLData(df; y_col="y", d_cols="d", z_cols="Z1")
+DoubleMLPLIV(data, ml_l, ml_m, ml_r)  # E[Y|X], E[Z|X], E[D|X]
+```
+
+**IIVM** — binary `D` and binary `Z`, target = LATE:
+
+```julia
+data = make_iivm_data(n_obs=2000, theta=0.5; seed=1)
+DoubleMLIIVM(data, ml_g, ml_m, ml_r)  # E[Y|X,Z], E[Z|X], E[D|X,Z]
 ```
 
 ## Run tests

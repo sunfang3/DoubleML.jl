@@ -123,6 +123,7 @@ export
     sensitivity_analysis!,
     sensitivity_summary,
     sensitivity_benchmark,
+    sensitivity_contour,
     SensitivityResult,
     SensitivityElements,
     # heterogeneous effects (CATE / GATE)

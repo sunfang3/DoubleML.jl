@@ -35,6 +35,8 @@ mutable struct DoubleMLIRM <: AbstractDoubleML
     sensitivity::Union{Nothing,SensitivityResult}
     fitted::Bool
     rng::AbstractRNG
+    ml_params::Dict{String,Any}
+    models::Dict{String,Any}
 end
 
 function DoubleMLIRM(data::DoubleMLData, ml_g, ml_m;
@@ -80,28 +82,38 @@ function DoubleMLIRM(data::DoubleMLData, ml_g, ml_m;
         copy(data.d_cols),
         nothing, nothing, nothing,
         false, rng,
+        Dict{String,Any}(), Dict{String,Any}(),
     )
 end
 
-function _cross_fit_g_binary(ml_g, X, y, d, folds)
+function _cross_fit_g_binary(ml_g, X, y, d, folds; store_models::Bool=false,
+                             params_factory=nothing)
     n = size(X, 1)
     g0 = fill(NaN, n)
     g1 = fill(NaN, n)
-    for (train, test) in folds
+    models0 = store_models ? Any[] : nothing
+    models1 = store_models ? Any[] : nothing
+    for (k, (train, test)) in enumerate(folds)
         tr0 = train[d[train] .== 0]
         tr1 = train[d[train] .== 1]
         isempty(tr0) && error("No control units in a training fold")
         isempty(tr1) && error("No treated units in a training fold")
-        m0 = clone(ml_g); m1 = clone(ml_g)
+        p = params_factory === nothing ? nothing : params_factory(k)
+        m0 = p === nothing ? clone(ml_g) : _clone_with_params(ml_g, p)
+        m1 = p === nothing ? clone(ml_g) : _clone_with_params(ml_g, p)
         fit!(m0, X[tr0, :], y[tr0])
         fit!(m1, X[tr1, :], y[tr1])
         g0[test] = predict(m0, X[test, :])
         g1[test] = predict(m1, X[test, :])
+        if store_models
+            push!(models0, m0); push!(models1, m1)
+        end
     end
-    return g0, g1
+    return g0, g1, models0, models1
 end
 
 function fit!(m::DoubleMLIRM; store_predictions::Bool=true,
+              store_models::Bool=false,
               external_predictions=nothing)
     data = m.data
     y = data.y
@@ -134,10 +146,13 @@ function fit!(m::DoubleMLIRM; store_predictions::Bool=true,
     psi_s = fill(NaN, n, n_rep)
     psi_n = fill(NaN, n, n_rep)
     rr_m = fill(NaN, n, n_rep)
+    models_store = Dict{String,Any}()
 
     for j in 1:n_t
         X, d, tname = design_for_treatment(data, j)
         d = collect(d)
+        ml_g = _learner_with_params(m, m.ml_g, "ml_g", tname)
+        ml_m = _learner_with_params(m, m.ml_m, "ml_m", tname)
         ext_j = if external_predictions isa AbstractDict &&
                    (haskey(external_predictions, tname) || haskey(external_predictions, Symbol(tname)))
             haskey(external_predictions, tname) ? external_predictions[tname] :
@@ -147,18 +162,34 @@ function fit!(m::DoubleMLIRM; store_predictions::Bool=true,
         end
         for r in 1:n_rep
             folds = m.smpls[r]
+            g_pf = _fold_params_factory(m, "ml_g", tname, r)
+            m_pf = _fold_params_factory(m, "ml_m", tname, r)
             g0_ext = _apply_external_pred(ext_j, "ml_g0", r, n)
             g1_ext = _apply_external_pred(ext_j, "ml_g1", r, n)
+            local models0, models1
             if g0_ext === nothing || g1_ext === nothing
-                g0, g1 = _cross_fit_g_binary(m.ml_g, X, y, d, folds)
+                g0, g1, models0, models1 = _cross_fit_g_binary(
+                    ml_g, X, y, d, folds; store_models=store_models, params_factory=g_pf)
                 g0_ext !== nothing && (g0 = g0_ext)
                 g1_ext !== nothing && (g1 = g1_ext)
             else
                 g0, g1 = g0_ext, g1_ext
+                models0 = models1 = nothing
             end
-            m̂ = something(_apply_external_pred(ext_j, "ml_m", r, n),
-                           cross_fit_predict(m.ml_m, X, d, folds; classifier=is_classifier(m.ml_m)))
+            m̂, m_models = if (extm = _apply_external_pred(ext_j, "ml_m", r, n)) !== nothing
+                extm, nothing
+            else
+                cross_fit_predict_store(ml_m, X, d, folds;
+                                       classifier=is_classifier(ml_m),
+                                       params_factory=m_pf,
+                                       store_models=store_models)
+            end
             m̂ = clamp.(m̂, ε, 1 - ε)
+            if store_models && j == 1 && r == 1
+                models_store["ml_g0"] = models0
+                models_store["ml_g1"] = models1
+                models_store["ml_m"] = m_models
+            end
 
             if m.score == "ATE"
                 dr = (g1 .- g0) .+
@@ -227,6 +258,7 @@ function fit!(m::DoubleMLIRM; store_predictions::Bool=true,
     if store_predictions
         m.predictions = Dict("ml_g0" => g0_preds, "ml_g1" => g1_preds, "ml_m" => m_preds)
     end
+    m.models = store_models ? models_store : Dict{String,Any}()
     m.fitted = true
     return m
 end

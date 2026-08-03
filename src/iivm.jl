@@ -41,6 +41,8 @@ mutable struct DoubleMLIIVM <: AbstractDoubleML
     boot::Union{Nothing,BootstrapResult}
     fitted::Bool
     rng::AbstractRNG
+    ml_params::Dict{String,Any}
+    models::Dict{String,Any}
 end
 
 function DoubleMLIIVM(data::DoubleMLData, ml_g, ml_m, ml_r;
@@ -102,6 +104,7 @@ function DoubleMLIIVM(data::DoubleMLData, ml_g, ml_m, ml_r;
         fill(NaN, n, n_rep, 1), fill(NaN, n, n_rep, 1),
         Dict{String,Matrix{Float64}}(),
         [data.d_col], nothing, false, rng,
+        Dict{String,Any}(), Dict{String,Any}(),
     )
 end
 
@@ -124,6 +127,7 @@ function _cross_fit_conditional(ml, X, y, cond::AbstractVector{Bool}, folds;
 end
 
 function fit!(m::DoubleMLIIVM; store_predictions::Bool=true,
+              store_models::Bool=false,
               external_predictions=nothing)
     data = m.data
     X, y, d = data.x, data.y, data.d
@@ -132,6 +136,10 @@ function fit!(m::DoubleMLIIVM; store_predictions::Bool=true,
     n_rep = m.n_rep
     ε = m.trimming_threshold
     is_cl = is_cluster_data(data)
+    tname = data.d_col
+    ml_g = _learner_with_params(m, m.ml_g, "ml_g", tname)
+    ml_m = _learner_with_params(m, m.ml_m, "ml_m", tname)
+    ml_r = _learner_with_params(m, m.ml_r, "ml_r", tname)
 
     if isempty(m.smpls)
         smpls, smpls_cluster, n_fpc = init_sample_splitting(data, m.n_folds, n_rep; rng=m.rng)
@@ -149,6 +157,7 @@ function fit!(m::DoubleMLIIVM; store_predictions::Bool=true,
     g0p = fill(NaN, n, n_rep); g1p = fill(NaN, n, n_rep)
     mp = fill(NaN, n, n_rep)
     r0p = fill(NaN, n, n_rep); r1p = fill(NaN, n, n_rep)
+    models_store = Dict{String,Any}()
 
     z0 = z .== 0
     z1 = z .== 1
@@ -156,11 +165,11 @@ function fit!(m::DoubleMLIIVM; store_predictions::Bool=true,
     for rep in 1:n_rep
         folds = m.smpls[rep]
         g0 = something(_apply_external_pred(external_predictions, "ml_g0", rep, n),
-                       _cross_fit_conditional(m.ml_g, X, y, z0, folds; classifier=false))
+                       _cross_fit_conditional(ml_g, X, y, z0, folds; classifier=false))
         g1 = something(_apply_external_pred(external_predictions, "ml_g1", rep, n),
-                       _cross_fit_conditional(m.ml_g, X, y, z1, folds; classifier=false))
+                       _cross_fit_conditional(ml_g, X, y, z1, folds; classifier=false))
         m̂ = something(_apply_external_pred(external_predictions, "ml_m", rep, n),
-                       cross_fit_predict(m.ml_m, X, z, folds; classifier=is_classifier(m.ml_m)))
+                       cross_fit_predict(ml_m, X, z, folds; classifier=is_classifier(ml_m)))
         m̂ = clamp.(m̂, ε, 1 - ε)
         # normalize IPW using instrument Z (propensity m = P(Z=1|X))
         if m.normalize_ipw
@@ -170,14 +179,14 @@ function fit!(m::DoubleMLIIVM; store_predictions::Bool=true,
 
         if m.always_takers
             r0 = something(_apply_external_pred(external_predictions, "ml_r0", rep, n),
-                           _cross_fit_conditional(m.ml_r, X, d, z0, folds; classifier=is_classifier(m.ml_r)))
+                           _cross_fit_conditional(ml_r, X, d, z0, folds; classifier=is_classifier(ml_r)))
             r0 = clamp.(r0, 0.0, 1.0)
         else
             r0 = zeros(n)
         end
         if m.never_takers
             r1 = something(_apply_external_pred(external_predictions, "ml_r1", rep, n),
-                           _cross_fit_conditional(m.ml_r, X, d, z1, folds; classifier=is_classifier(m.ml_r)))
+                           _cross_fit_conditional(ml_r, X, d, z1, folds; classifier=is_classifier(ml_r)))
             r1 = clamp.(r1, 0.0, 1.0)
         else
             r1 = ones(n)
@@ -222,6 +231,7 @@ function fit!(m::DoubleMLIIVM; store_predictions::Bool=true,
             "ml_r0" => r0p, "ml_r1" => r1p,
         )
     end
+    m.models = store_models ? Dict{String,Any}("note" => "IIVM fold models via predictions") : Dict{String,Any}()
     m.fitted = true
     return m
 end

@@ -342,3 +342,128 @@ function tune!(m::DoubleMLIIVM;
     m.boot = nothing
     return results
 end
+
+"""
+    tune!(m::DoubleMLSSM; param_grids, ...)
+
+Tune SSM nuisances. Keys: `:ml_g`, `:ml_m`, `:ml_pi`.
+"""
+function tune!(m::DoubleMLSSM;
+               param_grids::AbstractDict,
+               n_folds_tune::Int=5,
+               search_mode::Symbol=:grid,
+               n_iter::Int=10,
+               rng::Union{Nothing,AbstractRNG}=nothing)
+    rng = rng === nothing ? m.rng : rng
+    data = m.data
+    X, y, d, s = data.x, data.y, data.d, data.s
+    results = Dict{Symbol,TuneResult}()
+    sel = s .== 1
+    if haskey(param_grids, :ml_g) && any(sel)
+        nf = min(n_folds_tune, max(2, count(sel) ÷ 10))
+        best, res = tune_learner(m.ml_g, X[sel, :], y[sel], param_grids[:ml_g];
+                                 n_folds=nf, search_mode=search_mode,
+                                 n_iter=n_iter, rng=rng, classifier=false)
+        m.ml_g = best
+        results[:ml_g] = res
+    end
+    if haskey(param_grids, :ml_m)
+        best, res = tune_learner(m.ml_m, X, d, param_grids[:ml_m];
+                                 n_folds=n_folds_tune, search_mode=search_mode,
+                                 n_iter=n_iter, rng=rng, classifier=true)
+        m.ml_m = best
+        results[:ml_m] = res
+    end
+    if haskey(param_grids, :ml_pi)
+        Xd = hcat(X, d)
+        best, res = tune_learner(m.ml_pi, Xd, s, param_grids[:ml_pi];
+                                 n_folds=n_folds_tune, search_mode=search_mode,
+                                 n_iter=n_iter, rng=rng, classifier=true)
+        m.ml_pi = best
+        results[:ml_pi] = res
+    end
+    m.fitted = false
+    m.boot = nothing
+    return results
+end
+
+"""
+    tune!(m::DoubleMLDID; param_grids, ...)
+
+Tune two-period DID nuisances. Keys: `:ml_g`, `:ml_m`.
+"""
+function tune!(m::DoubleMLDID;
+               param_grids::AbstractDict,
+               n_folds_tune::Int=5,
+               search_mode::Symbol=:grid,
+               n_iter::Int=10,
+               rng::Union{Nothing,AbstractRNG}=nothing)
+    rng = rng === nothing ? m.rng : rng
+    data = m.data
+    X, y, d = data.x, data.y, data.d
+    results = Dict{Symbol,TuneResult}()
+    if haskey(param_grids, :ml_g)
+        best, res = tune_learner(m.ml_g, X, y, param_grids[:ml_g];
+                                 n_folds=n_folds_tune, search_mode=search_mode,
+                                 n_iter=n_iter, rng=rng, classifier=false)
+        m.ml_g = best
+        results[:ml_g] = res
+    end
+    if haskey(param_grids, :ml_m) && m.ml_m !== nothing
+        best, res = tune_learner(m.ml_m, X, d, param_grids[:ml_m];
+                                 n_folds=n_folds_tune, search_mode=search_mode,
+                                 n_iter=n_iter, rng=rng, classifier=true)
+        m.ml_m = best
+        results[:ml_m] = res
+    end
+    m.fitted = false
+    m.boot = nothing
+    return results
+end
+
+"""
+    tune!(m::DoubleMLPLPR; param_grids, ...)
+
+Tune PLPR nuisances on the transformed panel. Keys: `:ml_l`, `:ml_m`, `:ml_g`.
+"""
+function tune!(m::DoubleMLPLPR;
+               param_grids::AbstractDict,
+               n_folds_tune::Int=5,
+               search_mode::Symbol=:grid,
+               n_iter::Int=10,
+               rng::Union{Nothing,AbstractRNG}=nothing)
+    rng = rng === nothing ? m.rng : rng
+    td, _, _ = _transform_plpr(m.data, m.approach)
+    X, y, d = td.x, td.y, td.d
+    results = Dict{Symbol,TuneResult}()
+    if haskey(param_grids, :ml_l)
+        best, res = tune_learner(m.ml_l, X, y, param_grids[:ml_l];
+                                 n_folds=n_folds_tune, search_mode=search_mode,
+                                 n_iter=n_iter, rng=rng, classifier=false)
+        m.ml_l = best
+        results[:ml_l] = res
+    end
+    if haskey(param_grids, :ml_m)
+        best, res = tune_learner(m.ml_m, X, d, param_grids[:ml_m];
+                                 n_folds=n_folds_tune, search_mode=search_mode,
+                                 n_iter=n_iter, rng=rng,
+                                 classifier=is_classifier(m.ml_m))
+        m.ml_m = best
+        results[:ml_m] = res
+    end
+    if haskey(param_grids, :ml_g) && m.ml_g !== nothing
+        folds = make_folds(n_obs(td), n_folds_tune; rng=rng)
+        ℓ̂ = cross_fit_predict(m.ml_l, X, y, folds)
+        m̂ = cross_fit_predict(m.ml_m, X, d, folds; classifier=is_classifier(m.ml_m))
+        v = d .- m̂; u = y .- ℓ̂
+        θ0 = sum(v .* u) / max(sum(v .* v), eps())
+        best, res = tune_learner(m.ml_g, X, y .- θ0 .* d, param_grids[:ml_g];
+                                 n_folds=n_folds_tune, search_mode=search_mode,
+                                 n_iter=n_iter, rng=rng, classifier=false)
+        m.ml_g = best
+        results[:ml_g] = res
+    end
+    m.fitted = false
+    m.boot = nothing
+    return results
+end

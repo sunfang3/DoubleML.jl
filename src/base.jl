@@ -163,6 +163,68 @@ function _clone_with_params(learner, params)
 end
 
 """
+    _learner_with_params(m, base, learner_name, treat_var)
+
+Return base learner with global (dict) params applied from `m.ml_params`.
+"""
+function _learner_with_params(m::AbstractDoubleML, base, learner_name::AbstractString,
+                              treat_var::AbstractString)
+    hasproperty(m, :ml_params) || return base
+    !haskey(m.ml_params, learner_name) && return base
+    d = m.ml_params[learner_name]
+    !haskey(d, treat_var) && return base
+    raw = d[treat_var]
+    raw isa AbstractDict || return base
+    return _clone_with_params(base, raw)
+end
+
+"""
+Cross-fit predictions, optionally applying fold-specific params and returning fitted models.
+
+`params_factory(fold_idx) -> Dict or nothing` for fold-specific hyperparameters.
+"""
+function cross_fit_predict_store(learner, X::AbstractMatrix, y::AbstractVector, folds;
+                                 classifier::Bool=false,
+                                 params_factory=nothing,
+                                 store_models::Bool=false)
+    n = size(X, 1)
+    preds = fill(NaN, n)
+    models = store_models ? Any[] : nothing
+    for (k, (train, test)) in enumerate(folds)
+        p = params_factory === nothing ? nothing : params_factory(k)
+        mk = p === nothing ? clone(learner) : _clone_with_params(learner, p)
+        fit!(mk, X[train, :], y[train])
+        if classifier || is_classifier(mk)
+            preds[test] = predict_proba(mk, X[test, :])
+        else
+            preds[test] = predict(mk, X[test, :])
+        end
+        store_models && push!(models, mk)
+    end
+    return preds, models
+end
+
+"""Build fold-params factory from model ml_params for one learner/treat/rep."""
+function _fold_params_factory(m::AbstractDoubleML, learner::AbstractString,
+                              treat_var::AbstractString, rep::Int)
+    hasproperty(m, :ml_params) || return nothing
+    !haskey(m.ml_params, learner) && return nothing
+    d = m.ml_params[learner]
+    !haskey(d, treat_var) && return nothing
+    raw = d[treat_var]
+    if raw isa AbstractDict
+        return _ -> raw
+    elseif raw isa AbstractVector && length(raw) >= rep
+        inner = raw[rep]
+        if inner isa AbstractVector
+            return fold -> (length(inner) >= fold ? inner[fold] : nothing)
+        end
+        return _ -> inner
+    end
+    return nothing
+end
+
+"""
     evaluate_learners(m; metric=rmse) -> Dict
 
 Cross-fitted nuisance prediction quality (Python `evaluate_learners`).

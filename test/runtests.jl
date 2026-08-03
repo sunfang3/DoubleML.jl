@@ -1059,4 +1059,51 @@ using Statistics
         @test isfinite(plr.coef[1])
         @test haskey(plr.ml_params, "ml_l")
     end
+
+    @testset "IRM store_models + sensitivity_contour + tune extensions" begin
+        data = make_irm_data(n_obs=600, dim_x=4, theta=0.5; seed=941)
+        irm = DoubleMLIRM(data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+                          n_folds=3, rng=MersenneTwister(941))
+        set_ml_nuisance_params!(irm, "ml_m", data.d_col, Dict(:α => 0.2))
+        fit!(irm; store_models=true)
+        @test haskey(irm.models, "ml_m")
+        @test irm.models["ml_m"] !== nothing
+        sensitivity_analysis!(irm; cf_y=0.04, cf_d=0.03)
+        grid = sensitivity_contour(irm; cf_y_max=0.1, cf_d_max=0.1, grid_size=5)
+        @test nrow(grid) == 25
+        @test :covers_null in propertynames(grid)
+        @test all(isfinite, grid.theta_lower)
+
+        # tune SSM / DID / PLPR smoke
+        sdata = make_ssm_data(n_obs=500, dim_x=3, theta=1.0; seed=942)
+        ssm = DoubleMLSSM(sdata, RidgeLearner(α=1.0), LogisticRegressionLearner(α=1.0),
+                          LogisticRegressionLearner(α=1.0); n_folds=3, rng=MersenneTwister(942))
+        tr = tune!(ssm; param_grids=Dict(:ml_m => Dict(:α => [0.1, 1.0])), n_folds_tune=3)
+        @test haskey(tr, :ml_m)
+        fit!(ssm)
+        @test isfinite(ssm.coef[1])
+
+        ddata = make_did_data(n_obs=400, theta=-2.0; seed=943)
+        did = DoubleMLDID(ddata, RidgeLearner(α=1.0), LogisticRegressionLearner(α=1.0);
+                          n_folds=3, rng=MersenneTwister(943))
+        tr2 = tune!(did; param_grids=Dict(:ml_g => Dict(:α => [0.1, 1.0])), n_folds_tune=3)
+        @test haskey(tr2, :ml_g)
+
+        pdata = make_plpr_data(n_id=80, n_t=3, dim_x=2, theta=0.5; seed=944)
+        plpr = DoubleMLPLPR(pdata, RidgeLearner(α=1.0), RidgeLearner(α=1.0);
+                            approach="wg_approx", n_folds=3, rng=MersenneTwister(944))
+        tr3 = tune!(plpr; param_grids=Dict(:ml_l => Dict(:α => [0.1, 1.0])), n_folds_tune=3)
+        @test haskey(tr3, :ml_l)
+        fit!(plpr)
+        @test isfinite(plpr.coef[1])
+
+        # PLIV store_models
+        iv = make_pliv_data(n_obs=500, dim_x=4, dim_z=1, theta=0.5; seed=945)
+        ml = RidgeLearner(α=0.5)
+        pliv = DoubleMLPLIV(iv, clone(ml), clone(ml), clone(ml); n_folds=3, rng=MersenneTwister(945))
+        set_ml_nuisance_params!(pliv, "ml_l", iv.d_col, Dict(:α => 0.2))
+        fit!(pliv; store_models=true)
+        @test haskey(pliv.models, "ml_l")
+        @test length(pliv.models["ml_l"]) == 3
+    end
 end

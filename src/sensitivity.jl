@@ -310,6 +310,76 @@ function sensitivity_summary(m::AbstractDoubleML)
 end
 
 """
+    sensitivity_contour(m; cf_y_max=0.15, cf_d_max=0.15, grid_size=20,
+                        rho=1.0, level=0.95, null_hypothesis=0.0, value=:theta)
+
+Numerical sensitivity contour grid (Python `sensitivity_plot` data layer, no plotting).
+
+# Returns
+`DataFrame` with columns `cf_y`, `cf_d`, `theta_lower`, `theta_upper`,
+`ci_lower`, `ci_upper`, and optionally `covers_null` for the chosen `value`.
+
+# Arguments
+- `value`: `:theta` uses theta bounds; `:ci` uses CI bounds for `covers_null`
+"""
+function sensitivity_contour(m::AbstractDoubleML;
+                             cf_y_max::Real=0.15,
+                             cf_d_max::Real=0.15,
+                             grid_size::Int=20,
+                             rho::Real=1.0,
+                             level::Real=0.95,
+                             null_hypothesis::Real=0.0,
+                             value::Symbol=:theta)
+    m.fitted || error("Call fit! first")
+    hasproperty(m, :sens_elements) || error("Sensitivity not implemented for $(typeof(m))")
+    m.sens_elements === nothing && error("No sensitivity elements — re-fit")
+    value in (:theta, :ci) || throw(ArgumentError("value must be :theta or :ci"))
+    grid_size >= 2 || throw(ArgumentError("grid_size ≥ 2"))
+
+    selem = m.sens_elements
+    n_rep = length(selem.sigma2)
+    all_psi_scaled = similar(selem.psi_sigma2)
+    all_psi_max = similar(selem.psi_sigma2)
+    all_max_bias = zeros(n_rep)
+    all_theta = vec(m.all_coef[1, :])
+    for r in 1:n_rep
+        mb, pmb = _max_bias_and_if(selem.sigma2[r], selem.nu2[r],
+                                   @view(selem.psi_sigma2[:, r]), @view(selem.psi_nu2[:, r]))
+        all_max_bias[r] = mb
+        all_psi_max[:, r] = pmb
+        J = mean(@view m.psi_deriv[:, r, 1])
+        all_psi_scaled[:, r] = @view(m.psi[:, r, 1]) ./ J
+    end
+
+    ys = range(0.0, Float64(cf_y_max); length=grid_size)
+    ds = range(0.0, Float64(cf_d_max); length=grid_size)
+    rows_cfy = Float64[]; rows_cfd = Float64[]
+    tl = Float64[]; tu = Float64[]; cl = Float64[]; cu = Float64[]
+    covers = Bool[]
+    for cy in ys, cd in ds
+        strength = confounding_strength(cy, cd, rho)
+        b = _sensitivity_bounds(all_theta, all_max_bias, all_psi_scaled, all_psi_max, strength, level)
+        push!(rows_cfy, cy); push!(rows_cfd, cd)
+        push!(tl, b.theta_lower); push!(tu, b.theta_upper)
+        push!(cl, b.ci_lower); push!(cu, b.ci_upper)
+        if value === :theta
+            push!(covers, b.theta_lower <= null_hypothesis <= b.theta_upper)
+        else
+            push!(covers, b.ci_lower <= null_hypothesis <= b.ci_upper)
+        end
+    end
+    return DataFrame(
+        cf_y = rows_cfy, cf_d = rows_cfd,
+        theta_lower = tl, theta_upper = tu,
+        ci_lower = cl, ci_upper = cu,
+        covers_null = covers,
+        rho = fill(Float64(rho), length(rows_cfy)),
+        level = fill(Float64(level), length(rows_cfy)),
+        value = fill(String(value), length(rows_cfy)),
+    )
+end
+
+"""
     sensitivity_benchmark(dml_long, dml_short) -> NamedTuple
 
 Benchmark confounding strength by comparing a long regression (all covariates)

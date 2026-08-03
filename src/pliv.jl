@@ -39,6 +39,8 @@ mutable struct DoubleMLPLIV <: AbstractDoubleML
     boot::Union{Nothing,BootstrapResult}
     fitted::Bool
     rng::AbstractRNG
+    ml_params::Dict{String,Any}
+    models::Dict{String,Any}
 end
 
 function _pliv_init(data, ml_l, ml_m, ml_r, ml_g, partial_mode, n_folds, n_rep, score,
@@ -75,6 +77,7 @@ function _pliv_init(data, ml_l, ml_m, ml_r, ml_g, partial_mode, n_folds, n_rep, 
         fill(NaN, n, n_rep, 1), fill(NaN, n, n_rep, 1),
         Dict{String,Matrix{Float64}}(),
         [data.d_col], nothing, false, rng,
+        Dict{String,Any}(), Dict{String,Any}(),
     )
 end
 
@@ -186,23 +189,29 @@ function _cross_fit_fold_targets(ml, X::AbstractMatrix, y_list::Vector{Vector{Fl
     return oof
 end
 
-function fit!(m::DoubleMLPLIV; store_predictions::Bool=true)
+function fit!(m::DoubleMLPLIV; store_predictions::Bool=true, store_models::Bool=false)
     if m.partial_mode == :partialX
-        return _fit_pliv_partial_x!(m; store_predictions)
+        return _fit_pliv_partial_x!(m; store_predictions, store_models)
     elseif m.partial_mode == :partialZ
-        return _fit_pliv_partial_z!(m; store_predictions)
+        return _fit_pliv_partial_z!(m; store_predictions, store_models)
     else
-        return _fit_pliv_partial_xz!(m; store_predictions)
+        return _fit_pliv_partial_xz!(m; store_predictions, store_models)
     end
 end
 
-function _fit_pliv_partial_x!(m::DoubleMLPLIV; store_predictions::Bool=true)
+function _fit_pliv_partial_x!(m::DoubleMLPLIV; store_predictions::Bool=true,
+                              store_models::Bool=false)
     data = m.data
     X, y, d = data.x, data.y, data.d
     Z = data.z
     n = n_obs(data)
     n_rep = m.n_rep
     k = size(Z, 2)
+    tname = data.d_col
+    ml_l = _learner_with_params(m, m.ml_l, "ml_l", tname)
+    ml_m = m.ml_m === nothing ? nothing : _learner_with_params(m, m.ml_m, "ml_m", tname)
+    ml_r = _learner_with_params(m, m.ml_r, "ml_r", tname)
+    ml_g = m.ml_g === nothing ? nothing : _learner_with_params(m, m.ml_g, "ml_g", tname)
     _pliv_ensure_smpls!(m)
 
     all_coef = zeros(1, n_rep)
@@ -214,31 +223,38 @@ function _fit_pliv_partial_x!(m::DoubleMLPLIV; store_predictions::Bool=true)
     r_preds = fill(NaN, n, n_rep)
     g_preds = fill(NaN, n, n_rep)
     var_scaling = fill(Float64(n), 1)
+    models_store = Dict{String,Any}()
 
     for rep in 1:n_rep
         folds = m.smpls[rep]
-        ℓ̂ = cross_fit_predict(m.ml_l, X, y, folds; classifier=false)
-        r̂ = cross_fit_predict(m.ml_r, X, d, folds; classifier=false)
+        ℓ̂, lm = cross_fit_predict_store(ml_l, X, y, folds; store_models=store_models)
+        r̂, rm = cross_fit_predict_store(ml_r, X, d, folds; store_models=store_models)
 
         if k == 1
             z = vec(Z)
-            m̂ = cross_fit_predict(m.ml_m, X, z, folds; classifier=false)
+            m̂, mm = cross_fit_predict_store(ml_m, X, z, folds; store_models=store_models)
             u = y .- ℓ̂
             w = d .- r̂
             v = z .- m̂
             if m.score == "IV-type"
                 θ0 = est_coef_linear(-(w .* v), v .* u)
-                ĝ = cross_fit_predict(m.ml_g, X, y .- θ0 .* d, folds; classifier=false)
+                ĝ, gm = cross_fit_predict_store(ml_g, X, y .- θ0 .* d, folds; store_models=store_models)
                 psi_a = -(v .* d)
                 psi_b = v .* (y .- ĝ)
                 g_preds[:, rep] = ĝ
+                store_models && rep == 1 && (models_store["ml_g"] = gm)
             else
                 psi_a = -(w .* v)
                 psi_b = v .* u
             end
             m_preds[:, rep] = m̂
+            if store_models && rep == 1
+                models_store["ml_l"] = lm
+                models_store["ml_m"] = mm
+                models_store["ml_r"] = rm
+            end
         else
-            M = _cross_fit_predict_multi(m.ml_m, X, Z, folds)
+            M = _cross_fit_predict_multi(ml_m, X, Z, folds)
             V = Z .- M
             w = d .- r̂
             u = y .- ℓ̂
@@ -246,6 +262,10 @@ function _fit_pliv_partial_x!(m::DoubleMLPLIV; store_predictions::Bool=true)
             psi_a = -(w .* r_tilde)
             psi_b = r_tilde .* u
             m_preds[:, rep] = r_tilde
+            if store_models && rep == 1
+                models_store["ml_l"] = lm
+                models_store["ml_r"] = rm
+            end
         end
 
         θ = est_coef_linear(psi_a, psi_b)
@@ -261,16 +281,19 @@ function _fit_pliv_partial_x!(m::DoubleMLPLIV; store_predictions::Bool=true)
 
     _finalize_pliv!(m, all_coef, all_se, psi_arr, psi_d_arr, store_predictions,
                     Dict("ml_l" => l_preds, "ml_m" => m_preds, "ml_r" => r_preds,
-                         "ml_g" => g_preds); var_scaling=var_scaling)
+                         "ml_g" => g_preds); var_scaling=var_scaling, models=models_store)
 end
 
-function _fit_pliv_partial_z!(m::DoubleMLPLIV; store_predictions::Bool=true)
+function _fit_pliv_partial_z!(m::DoubleMLPLIV; store_predictions::Bool=true,
+                              store_models::Bool=false)
     data = m.data
     X, y, d = data.x, data.y, data.d
     Z = data.z
     XZ = hcat(X, Z)
     n = n_obs(data)
     n_rep = m.n_rep
+    tname = data.d_col
+    ml_r = _learner_with_params(m, m.ml_r, "ml_r", tname)
     _pliv_ensure_smpls!(m)
 
     all_coef = zeros(1, n_rep)
@@ -279,10 +302,11 @@ function _fit_pliv_partial_z!(m::DoubleMLPLIV; store_predictions::Bool=true)
     psi_d_arr = fill(NaN, n, n_rep, 1)
     r_preds = fill(NaN, n, n_rep)
     var_scaling = fill(Float64(n), 1)
+    models_store = Dict{String,Any}()
 
     for rep in 1:n_rep
         folds = m.smpls[rep]
-        r̂ = cross_fit_predict(m.ml_r, XZ, d, folds; classifier=false)
+        r̂, rm = cross_fit_predict_store(ml_r, XZ, d, folds; store_models=store_models)
         psi_a = -(r̂ .* d)
         psi_b = r̂ .* y
         θ = est_coef_linear(psi_a, psi_b)
@@ -293,19 +317,25 @@ function _fit_pliv_partial_z!(m::DoubleMLPLIV; store_predictions::Bool=true)
         psi_arr[:, rep, 1] = psi_a .* θ .+ psi_b
         psi_d_arr[:, rep, 1] = psi_a
         r_preds[:, rep] = r̂
+        store_models && rep == 1 && (models_store["ml_r"] = rm)
     end
 
     _finalize_pliv!(m, all_coef, all_se, psi_arr, psi_d_arr, store_predictions,
-                    Dict("ml_r" => r_preds); var_scaling=var_scaling)
+                    Dict("ml_r" => r_preds); var_scaling=var_scaling, models=models_store)
 end
 
-function _fit_pliv_partial_xz!(m::DoubleMLPLIV; store_predictions::Bool=true)
+function _fit_pliv_partial_xz!(m::DoubleMLPLIV; store_predictions::Bool=true,
+                               store_models::Bool=false)
     data = m.data
     X, y, d = data.x, data.y, data.d
     Z = data.z
     XZ = hcat(X, Z)
     n = n_obs(data)
     n_rep = m.n_rep
+    tname = data.d_col
+    ml_l = _learner_with_params(m, m.ml_l, "ml_l", tname)
+    ml_m = _learner_with_params(m, m.ml_m, "ml_m", tname)
+    ml_r = _learner_with_params(m, m.ml_r, "ml_r", tname)
     _pliv_ensure_smpls!(m)
 
     all_coef = zeros(1, n_rep)
@@ -319,9 +349,9 @@ function _fit_pliv_partial_xz!(m::DoubleMLPLIV; store_predictions::Bool=true)
 
     for rep in 1:n_rep
         folds = m.smpls[rep]
-        ℓ̂ = cross_fit_predict(m.ml_l, X, y, folds; classifier=false)
-        m̂, train_list = _cross_fit_with_train_preds(m.ml_m, XZ, d, folds)
-        m̃ = _cross_fit_fold_targets(m.ml_r, X, train_list, folds)
+        ℓ̂ = cross_fit_predict(ml_l, X, y, folds; classifier=false)
+        m̂, train_list = _cross_fit_with_train_preds(ml_m, XZ, d, folds)
+        m̃ = _cross_fit_fold_targets(ml_r, X, train_list, folds)
 
         u = y .- ℓ̂
         w = d .- m̃
@@ -343,17 +373,18 @@ function _fit_pliv_partial_xz!(m::DoubleMLPLIV; store_predictions::Bool=true)
 
     _finalize_pliv!(m, all_coef, all_se, psi_arr, psi_d_arr, store_predictions,
                     Dict("ml_l" => l_preds, "ml_m" => m_preds, "ml_r" => r_preds);
-                    var_scaling=var_scaling)
+                    var_scaling=var_scaling, models=Dict{String,Any}())
 end
 
 function _finalize_pliv!(m, all_coef, all_se, psi_arr, psi_d_arr, store_predictions, preds;
-                         var_scaling=nothing)
+                         var_scaling=nothing, models=Dict{String,Any}())
     coef, se = aggregate_reps(all_coef, all_se)
     m.coef = coef; m.se = se
     m.all_coef = all_coef; m.all_se = all_se
     m.psi = psi_arr; m.psi_deriv = psi_d_arr
     m.var_scaling = var_scaling
     m.boot = nothing
+    m.models = models
     if is_cluster_data(m.data)
         m.cluster_dict = (
             smpls=m.smpls, smpls_cluster=m.smpls_cluster,

@@ -118,6 +118,9 @@ model.confint()                →    confint(model)
 | **set_ml_nuisance_params!** | Per-learner hyperparams before `fit!` | ✅ |
 | **store_models** | Nested CF models stored for SSM | ✅ |
 | **effects_table / plot_effects** | DID multi event-study / group / time table | ✅ |
+| **store_models (IRM/PLIV/SSM)** | Fold-level fitted nuisances when requested | ✅ |
+| **tune! SSM/DID/PLPR** | Grid/random hyperparameter search | ✅ |
+| **sensitivity_contour** | Numerical cf_y × cf_d grid (plot-ready DataFrame) | ✅ |
 | **SSM** | Sample selection (`missing-at-random` / basic `nonignorable`) | ✅ |
 | **RDD** | Sharp/fuzzy RD with ML residualization + local linear | ✅ |
 | **Cluster SE** | One-way post-hoc + **cluster-in-fit** (1/2-way) for PLR/IRM | ✅ |

@@ -41,7 +41,7 @@ mutable struct DoubleMLPLR <: AbstractDoubleML
     predictions::Dict{String,Matrix{Float64}}
     treat_names::Vector{String}
     boot::Union{Nothing,BootstrapResult}
-    sens_elements::Union{Nothing,SensitivityElements}
+    sens_elements::Union{Nothing,Vector{SensitivityElements}}
     sensitivity::Union{Nothing,SensitivityResult}
     fitted::Bool
     rng::AbstractRNG
@@ -127,14 +127,16 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true,
     m_preds = fill(NaN, n, n_rep)
     g_preds = fill(NaN, n, n_rep)
 
-    sigma2_v = zeros(n_rep)
-    nu2_v = zeros(n_rep)
-    psi_s = fill(NaN, n, n_rep)
-    psi_n = fill(NaN, n, n_rep)
-    rr_m = fill(NaN, n, n_rep)
+    # per-treatment sensitivity buffers
+    sens_list = SensitivityElements[]
     models_out = Dict{String,Any}()
 
     for j in 1:n_t
+        sigma2_v = zeros(n_rep)
+        nu2_v = zeros(n_rep)
+        psi_s = fill(NaN, n, n_rep)
+        psi_n = fill(NaN, n, n_rep)
+        rr_m = fill(NaN, n, n_rep)
         X, d, tname = design_for_treatment(data, j)
         d = collect(d)
         ml_l = _plr_learner(m, m.ml_l, "ml_l", tname)
@@ -206,19 +208,23 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true,
             if j == 1
                 l_preds[:, r] = ℓ̂
                 m_preds[:, r] = m̂
-                if !is_callable_score(m.score)
-                    if m.score == "IV-type"
-                        σ2, ν2, ps, pn, rr = sensitivity_elements_plr(y, d, g_preds[:, r], m̂, θ; score="IV-type")
-                    else
-                        σ2, ν2, ps, pn, rr = sensitivity_elements_plr(y, d, ℓ̂, m̂, θ; score="partialling out")
-                    end
-                    sigma2_v[r] = σ2
-                    nu2_v[r] = ν2
-                    psi_s[:, r] = ps
-                    psi_n[:, r] = pn
-                    rr_m[:, r] = rr
-                end
             end
+            if !is_callable_score(m.score)
+                if m.score == "IV-type"
+                    g_loc = ĝ === nothing ? ℓ̂ : ĝ
+                    σ2, ν2, ps, pn, rr = sensitivity_elements_plr(y, d, g_loc, m̂, θ; score="IV-type")
+                else
+                    σ2, ν2, ps, pn, rr = sensitivity_elements_plr(y, d, ℓ̂, m̂, θ; score="partialling out")
+                end
+                sigma2_v[r] = σ2
+                nu2_v[r] = ν2
+                psi_s[:, r] = ps
+                psi_n[:, r] = pn
+                rr_m[:, r] = rr
+            end
+        end
+        if !is_callable_score(m.score)
+            push!(sens_list, SensitivityElements(sigma2_v, nu2_v, psi_s, psi_n, rr_m))
         end
     end
 
@@ -232,8 +238,7 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true,
     m.var_scaling = var_scaling
     m.treat_names = copy(data.d_cols)
     m.boot = nothing
-    m.sens_elements = is_callable_score(m.score) ? nothing :
-        SensitivityElements(sigma2_v, nu2_v, psi_s, psi_n, rr_m)
+    m.sens_elements = isempty(sens_list) ? nothing : sens_list
     m.sensitivity = nothing
     if is_cl
         m.cluster_dict = (

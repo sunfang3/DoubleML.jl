@@ -1,7 +1,7 @@
 name = "DoubleML"
 uuid = "a8f1c8e0-7b2d-4e3f-9a1b-0c2d3e4f5a6b"
 authors = ["Fang Sun <29148452@qq.com>"]
-version = "1.6.0"
+version = "1.7.0"
 
 [deps]
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"

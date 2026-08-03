@@ -23,6 +23,7 @@ mutable struct DoubleMLAPO <: AbstractDoubleML
     n_folds::Int
     n_rep::Int
     trimming_threshold::Float64
+    ps_processor::PSProcessor
     normalize_ipw::Bool
     weights::Union{Nothing,Vector{Float64}}
     smpls::Vector
@@ -44,6 +45,7 @@ function DoubleMLAPO(data::DoubleMLData, ml_g, ml_m;
                      n_folds::Int=5,
                      n_rep::Int=1,
                      trimming_threshold::Real=1e-2,
+                     ps_processor::Union{Nothing,PSProcessor}=nothing,
                      normalize_ipw::Bool=false,
                      weights::Union{Nothing,AbstractVector}=nothing,
                      draw_sample_splitting::Bool=true,
@@ -59,9 +61,10 @@ function DoubleMLAPO(data::DoubleMLData, ml_g, ml_m;
         make_repeated_folds(n_obs(data), n_folds, n_rep; rng=rng) :
         Vector{Any}()
     n = n_obs(data)
+    psp = resolve_ps_processor(ps_processor, trimming_threshold)
     return DoubleMLAPO(
         data, ml_g, ml_m, tl, n_folds, n_rep, Float64(trimming_threshold),
-        normalize_ipw,
+        psp, normalize_ipw,
         weights === nothing ? nothing : Float64.(weights),
         smpls,
         Float64[], Float64[],
@@ -93,7 +96,6 @@ function fit!(m::DoubleMLAPO; store_predictions::Bool=true)
     X, y, d = data.x, data.y, data.d
     n = n_obs(data)
     n_rep = m.n_rep
-    ε = m.trimming_threshold
     tl = m.treatment_level
     w = m.weights === nothing ? ones(n) : m.weights
     w_mean = mean(w)
@@ -117,10 +119,10 @@ function fit!(m::DoubleMLAPO; store_predictions::Bool=true)
         ĝ = _cross_fit_g_level(m.ml_g, X, y, d, tl, folds)
         # propensity for 1{D = level}
         m̂ = cross_fit_predict(m.ml_m, X, treated, folds; classifier=is_classifier(m.ml_m))
-        m̂ = clamp.(m̂, ε, 1 - ε)
+        m̂ = process_propensity(m̂, m.ps_processor)
         if m.normalize_ipw
             m̂ = _normalize_ipw(m̂, treated)
-            m̂ = clamp.(m̂, ε, 1 - ε)
+            m̂ = process_propensity(m̂, m.ps_processor)
         end
 
         u = y .- ĝ
@@ -165,6 +167,7 @@ mutable struct DoubleMLAPOS <: AbstractDoubleML
     n_folds::Int
     n_rep::Int
     trimming_threshold::Float64
+    ps_processor::PSProcessor
     normalize_ipw::Bool
     weights::Union{Nothing,Vector{Float64}}
     smpls::Vector
@@ -187,6 +190,7 @@ function DoubleMLAPOS(data::DoubleMLData, ml_g, ml_m,
                       n_folds::Int=5,
                       n_rep::Int=1,
                       trimming_threshold::Real=1e-2,
+                      ps_processor::Union{Nothing,PSProcessor}=nothing,
                       normalize_ipw::Bool=false,
                       weights::Union{Nothing,AbstractVector}=nothing,
                       draw_sample_splitting::Bool=true,
@@ -204,9 +208,10 @@ function DoubleMLAPOS(data::DoubleMLData, ml_g, ml_m,
     n = n_obs(data)
     n_l = length(levels)
     names = ["APO(d=$lv)" for lv in levels]
+    psp = resolve_ps_processor(ps_processor, trimming_threshold)
     return DoubleMLAPOS(
         data, ml_g, ml_m, levels, n_folds, n_rep, Float64(trimming_threshold),
-        normalize_ipw,
+        psp, normalize_ipw,
         weights === nothing ? nothing : Float64.(weights),
         smpls,
         Float64[], Float64[],
@@ -237,6 +242,7 @@ function fit!(m::DoubleMLAPOS; store_predictions::Bool=true)
             treatment_level=lv,
             n_folds=m.n_folds, n_rep=n_rep,
             trimming_threshold=m.trimming_threshold,
+            ps_processor=m.ps_processor,
             normalize_ipw=m.normalize_ipw,
             weights=m.weights,
             draw_sample_splitting=false,

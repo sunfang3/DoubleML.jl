@@ -19,13 +19,41 @@ const DoubleMLPanelData = DoubleMLData
 
 # ---- helpers ----------------------------------------------------------------
 
-"""Never-treated code: largest non-positive sentinel; we use `0`."""
-_never_treated_value() = 0
+"""
+Never-treated coding (Python parity):
+- Julia default / integer panels: `0`
+- Python float panels often use `+Inf` (or missing → Inf)
 
-_is_never_treated(g, never) = isapprox(g, never; atol=0) || g < 0
+`_is_never_treated` accepts `0`, negative, non-finite (`Inf`/`NaN`), or an explicit
+`never` sentinel (including `Inf`).
+"""
+_never_treated_value() = 0.0
+
+function _is_never_treated(g, never)
+    # non-finite group codes always count as never-treated (Python +inf)
+    !isfinite(Float64(g)) && return true
+    if !isfinite(Float64(never))
+        return !isfinite(Float64(g))
+    end
+    return isapprox(Float64(g), Float64(never); atol=0) || Float64(g) < 0
+end
+
+"""Detect default never-treated code from data (Inf if any non-finite d)."""
+function _detect_never_treated(data::DoubleMLData)
+    any(!isfinite, data.d) && return Inf
+    return 0.0
+end
 
 function _g_values(data::DoubleMLData)
-    sort(unique(Int.(round.(data.d))))
+    # finite treatment times only; never-treated may be 0 or Inf
+    gs = Float64[]
+    for v in unique(data.d)
+        if isfinite(v)
+            push!(gs, round(v))
+        end
+    end
+    # include never sentinel 0 if present as finite zero
+    return sort(unique(Int.(gs)))
 end
 
 function _t_values(data::DoubleMLData)
@@ -33,12 +61,12 @@ function _t_values(data::DoubleMLData)
 end
 
 function _unit_g_map(data::DoubleMLData)
-    # id → first-treatment group (from any row)
-    m = Dict{Int,Int}()
+    # id → first-treatment group (from any row); store Float64 to allow Inf
+    m = Dict{Int,Float64}()
     for i in 1:length(data.id)
-        u = data.id[i]
+        u = Int(data.id[i])
         if !haskey(m, u)
-            m[u] = Int(round(data.d[i]))
+            m[u] = Float64(data.d[i])
         end
     end
     return m
@@ -152,7 +180,7 @@ mutable struct DoubleMLDIDMulti <: AbstractDoubleML
     trimming_threshold::Float64
     ps_processor::PSProcessor
     in_sample_normalization::Bool
-    never_treated_value::Int
+    never_treated_value::Float64
     g_values::Vector{Int}
     t_values::Vector{Int}
     gt_combos::Vector{NTuple{3,Int}}  # (g, t_pre, t_eval)
@@ -185,7 +213,7 @@ function DoubleMLDIDMulti(data::DoubleMLData, ml_g, ml_m=nothing;
                           trimming_threshold::Real=1e-2,
                           ps_processor::Union{Nothing,PSProcessor}=nothing,
                           in_sample_normalization::Bool=true,
-                          never_treated_value::Integer=0,
+                          never_treated_value=nothing,
                           rng::AbstractRNG=Random.default_rng())
     data.id === nothing && throw(ArgumentError("panel data requires id"))
     data.t === nothing && throw(ArgumentError("panel data requires t"))
@@ -199,7 +227,8 @@ function DoubleMLDIDMulti(data::DoubleMLData, ml_g, ml_m=nothing;
     sc == "observational" && ml_m === nothing &&
         throw(ArgumentError("ml_m required for score=\"observational\""))
 
-    never = Int(never_treated_value)
+    never = never_treated_value === nothing ?
+        _detect_never_treated(data) : Float64(never_treated_value)
     gvals = _g_values(data)
     tvals = _t_values(data)
 
@@ -233,12 +262,12 @@ Build cross-section (ΔY, G, X) for one (g, t_pre, t_eval) with control group se
 Returns `(data::DoubleMLData, unit_ids::Vector{Int})`.
 """
 function _did_multi_cs(data::DoubleMLData, g::Int, t_pre::Int, t_eval::Int,
-                       control_group::String, never::Int, anticipation::Int, t_values::Vector{Int})
+                       control_group::String, never::Real, anticipation::Int, t_values::Vector{Int})
     ids = data.id
     ts = data.t
     row_of = Dict{Tuple{Int,Int},Int}()
     for i in 1:length(ids)
-        row_of[(ids[i], ts[i])] = i
+        row_of[(Int(ids[i]), Int(ts[i]))] = i
     end
     ug = _unit_g_map(data)
 
@@ -258,11 +287,11 @@ function _did_multi_cs(data::DoubleMLData, g::Int, t_pre::Int, t_eval::Int,
 
     for u in sort(collect(keys(ug)))
         g_u = ug[u]
-        G_ind = g_u == g
+        G_ind = isfinite(g_u) && isapprox(g_u, g; atol=0)
         if control_group == "never_treated"
             C_ind = _is_never_treated(g_u, never)
         else
-            later = (g_u > max_g) && !G_ind
+            later = isfinite(g_u) && (g_u > max_g) && !G_ind
             C_ind = _is_never_treated(g_u, never) || later
         end
         (G_ind || C_ind) || continue
@@ -553,13 +582,13 @@ function plot_effects(a::DIDAggregation; level::Real=0.95)
 end
 
 """Share of units in each treatment group (balanced panel unit-level)."""
-function _group_shares(data::DoubleMLData, g_values::Vector{Int}, never::Int)
+function _group_shares(data::DoubleMLData, g_values::Vector{Int}, never::Real)
     ug = _unit_g_map(data)
     n = length(ug)
     shares = Dict{Int,Float64}()
     for g in g_values
         _is_never_treated(g, never) && continue
-        shares[g] = count(==(g), values(ug)) / n
+        shares[g] = count(v -> isfinite(v) && isapprox(v, g; atol=0), values(ug)) / n
     end
     return shares
 end

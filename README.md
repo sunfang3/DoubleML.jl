@@ -129,6 +129,9 @@ model.confint()                →    confint(model)
 | **Optuna-style tune** | `tune_optuna!` / `search_mode=:optuna` (TPE-lite, no Optuna dep) | ✅ |
 | **RDFlex BC/Robust** | Conventional + bias-corrected + robust SE (`rdd_summary`) | ✅ |
 | **fetch_401K / fetch_bonus** | Real datasets (network + pandas on first download) | ✅ |
+| **APO PSProcessor** | Propensity clip on APO / APOS | ✅ |
+| **Multi-θ sensitivity** | Per-treatment OVB bounds + Framework multi-θ | ✅ |
+| **DID multi Inf never-treated** | Auto-detect `+Inf` / `0` never-treated coding | ✅ |
 | **SSM** | Sample selection (`missing-at-random` / basic `nonignorable`) | ✅ |
 | **RDD** | Sharp/fuzzy RD with ML residualization + local linear | ✅ |
 | **Cluster SE** | One-way post-hoc + **cluster-in-fit** (1/2-way) for PLR/IRM | ✅ |

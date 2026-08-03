@@ -32,7 +32,7 @@ mutable struct DoubleMLIRM <: AbstractDoubleML
     predictions::Dict{String,Matrix{Float64}}
     treat_names::Vector{String}
     boot::Union{Nothing,BootstrapResult}
-    sens_elements::Union{Nothing,SensitivityElements}
+    sens_elements::Union{Nothing,Vector{SensitivityElements}}
     sensitivity::Union{Nothing,SensitivityResult}
     fitted::Bool
     rng::AbstractRNG
@@ -143,14 +143,15 @@ function fit!(m::DoubleMLIRM; store_predictions::Bool=true,
     g1_preds = fill(NaN, n, n_rep)
     m_preds = fill(NaN, n, n_rep)
 
-    sigma2_v = zeros(n_rep)
-    nu2_v = zeros(n_rep)
-    psi_s = fill(NaN, n, n_rep)
-    psi_n = fill(NaN, n, n_rep)
-    rr_m = fill(NaN, n, n_rep)
+    sens_list = SensitivityElements[]
     models_store = Dict{String,Any}()
 
     for j in 1:n_t
+        sigma2_v = zeros(n_rep)
+        nu2_v = zeros(n_rep)
+        psi_s = fill(NaN, n, n_rep)
+        psi_n = fill(NaN, n, n_rep)
+        rr_m = fill(NaN, n, n_rep)
         X, d, tname = design_for_treatment(data, j)
         d = collect(d)
         ml_g = _learner_with_params(m, m.ml_g, "ml_g", tname)
@@ -234,15 +235,18 @@ function fit!(m::DoubleMLIRM; store_predictions::Bool=true,
                 g0_preds[:, r] = g0
                 g1_preds[:, r] = g1
                 m_preds[:, r] = m̂
-                if !is_callable_score(m.score)
-                    σ2, ν2, ps, pn, rr = sensitivity_elements_irm_ate(y, d, g0, g1, m̂)
-                    sigma2_v[r] = σ2
-                    nu2_v[r] = ν2
-                    psi_s[:, r] = ps
-                    psi_n[:, r] = pn
-                    rr_m[:, r] = rr
-                end
             end
+            if !is_callable_score(m.score)
+                σ2, ν2, ps, pn, rr = sensitivity_elements_irm_ate(y, d, g0, g1, m̂)
+                sigma2_v[r] = σ2
+                nu2_v[r] = ν2
+                psi_s[:, r] = ps
+                psi_n[:, r] = pn
+                rr_m[:, r] = rr
+            end
+        end
+        if !is_callable_score(m.score)
+            push!(sens_list, SensitivityElements(sigma2_v, nu2_v, psi_s, psi_n, rr_m))
         end
     end
 
@@ -253,8 +257,7 @@ function fit!(m::DoubleMLIRM; store_predictions::Bool=true,
     m.var_scaling = var_scaling
     m.treat_names = copy(data.d_cols)
     m.boot = nothing
-    m.sens_elements = is_callable_score(m.score) ? nothing :
-        SensitivityElements(sigma2_v, nu2_v, psi_s, psi_n, rr_m)
+    m.sens_elements = isempty(sens_list) ? nothing : sens_list
     m.sensitivity = nothing
     if is_cl
         m.cluster_dict = (

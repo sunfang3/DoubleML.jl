@@ -265,8 +265,9 @@ using Statistics
                           n_folds=5, rng=MersenneTwister(77))
         fit!(dml)
         @test dml.sens_elements !== nothing
-        @test all(dml.sens_elements.sigma2 .> 0)
-        @test all(dml.sens_elements.nu2 .> 0)
+        @test dml.sens_elements isa Vector
+        @test all(dml.sens_elements[1].sigma2 .> 0)
+        @test all(dml.sens_elements[1].nu2 .> 0)
 
         # no confounding → bounds collapse to θ
         r0 = sensitivity_analysis!(dml; cf_y=0.0, cf_d=0.0, rho=1.0, level=0.95)
@@ -1295,5 +1296,55 @@ using Statistics
             @info "fetch_bonus skipped (network/python)" exception=e
             @test true
         end
+    end
+
+    @testset "APO PSProcessor + multi-θ sensitivity + Inf never-treated" begin
+        # APO with PSProcessor
+        idata = make_irm_data(n_obs=500, dim_x=3, theta=0.5; seed=980)
+        apo = DoubleMLAPO(idata, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+                          treatment_level=1.0, n_folds=3,
+                          ps_processor=PSProcessor(clipping_threshold=0.02),
+                          rng=MersenneTwister(980))
+        fit!(apo)
+        @test isfinite(apo.coef[1])
+        @test apo.ps_processor.clipping_threshold == 0.02
+
+        # Multi-treatment PLR sensitivity + framework
+        mdata = make_plr_multi_data(n_obs=600, dim_x=4, theta=[0.5, -0.3]; seed=981)
+        plr = DoubleMLPLR(mdata, LinearRegressionLearner(), LinearRegressionLearner();
+                          n_folds=3, rng=MersenneTwister(981))
+        fit!(plr)
+        @test length(plr.coef) == 2
+        @test plr.sens_elements isa Vector
+        @test length(plr.sens_elements) == 2
+        r = sensitivity_analysis!(plr; cf_y=0.04, cf_d=0.03)
+        @test length(r.theta_lower) == 2
+        @test length(r.rv) == 2
+        @test all(isfinite, r.rv)
+        fw = construct_framework(plr)
+        @test fw.sens_elements !== nothing
+        @test length(fw.sens_elements) == 2
+        r2 = sensitivity_analysis!(fw; cf_y=0.04, cf_d=0.03)
+        @test length(r2.rv) == 2
+        grid = sensitivity_contour(fw; idx_treatment=2, grid_size=4)
+        @test nrow(grid) == 16
+        @test all(grid.treatment .== plr.treat_names[2])
+
+        # DID multi with Inf never-treated (Python float panel coding)
+        base = make_did_panel_data(n_id=100, n_t=4, dim_x=2, theta=1.5; seed=982)
+        # rewrite never-treated 0 → Inf
+        d_inf = copy(base.d)
+        d_inf[d_inf .== 0] .= Inf
+        data_inf = DoubleMLData(base.x, base.y, d_inf;
+                                y_col="y", d_col="d", id=base.id, t=base.t)
+        multi = DoubleMLDIDMulti(
+            data_inf, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            n_folds=3, rng=MersenneTwister(982),
+        )
+        @test isinf(multi.never_treated_value)
+        fit!(multi)
+        @test multi.fitted
+        @test length(multi.coef) >= 1
+        @test all(isfinite, multi.coef)
     end
 end

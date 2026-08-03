@@ -700,18 +700,58 @@ using Statistics
         @test ssm.se[1] > 0
     end
 
-    @testset "DID multi staggered" begin
-        data = make_did_panel_data(n_id=250, n_t=4, dim_x=3, theta=2.0; seed=621)
+    @testset "DID multi Callaway–Sant'Anna" begin
+        data = make_did_panel_data(n_id=280, n_t=4, dim_x=3, theta=2.0; seed=621)
         multi = DoubleMLDIDMulti(
             data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
-            n_folds=3, trimming_threshold=0.05, rng=MersenneTwister(621),
+            n_folds=3, trimming_threshold=0.05,
+            control_group="never_treated",
+            gt_combinations=:standard,
+            rng=MersenneTwister(621),
         )
         fit!(multi)
         @test multi.fitted
         @test length(multi.coef) >= 1
         @test all(isfinite, multi.coef)
-        # average ATT should be near theta
-        @test abs(mean(multi.coef) - 2.0) < 1.2
+        tab = att_table(multi)
+        @test nrow(tab) == length(multi.coef)
+        @test :event_time in propertynames(tab)
+        # post ATT mean near theta
+        post = tab[tab.post, :]
+        @test abs(mean(post.coef) - 2.0) < 1.2
+
+        # aggregations
+        ag = aggregate(multi, :group)
+        @test ag.method == "group"
+        @test length(ag.coef) >= 1
+        @test isfinite(ag.overall_coef)
+        at = aggregate(multi, :time)
+        @test at.method == "time"
+        ae = aggregate(multi, :eventstudy)
+        @test ae.method == "eventstudy"
+        @test any(occursin("e=", n) for n in ae.names)
+        st = summary_table(ag)
+        @test any(st.name .== "overall")
+
+        # not_yet_treated control
+        multi2 = DoubleMLDIDMulti(
+            data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            n_folds=3, control_group="not_yet_treated",
+            gt_combinations=:universal,
+            rng=MersenneTwister(622),
+        )
+        fit!(multi2)
+        @test all(isfinite, multi2.coef)
+
+        # anticipation
+        multi3 = DoubleMLDIDMulti(
+            data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            n_folds=3, anticipation_periods=0,
+            gt_combinations=:all,
+            rng=MersenneTwister(623),
+        )
+        fit!(multi3)
+        @test length(multi3.gt_combos) >= length(multi.gt_combos)
     end
 
     @testset "RDD sharp" begin

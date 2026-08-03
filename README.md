@@ -109,7 +109,7 @@ model.confint()                →    confint(model)
 | **CVaR / CVaR-TE** | Conditional value at risk of potential outcomes (`score="CVaR"`) | ✅ |
 | **APO / APOS** | Average potential outcomes + causal contrasts | ✅ |
 | **DID** | Two-period ATT (`observational` / `experimental`) | ✅ |
-| **DID multi** | Staggered group–time ATTs (panel long format) | ✅ |
+| **DID multi (CS)** | Callaway–Sant’Anna toolbox: never/not-yet, anticipation, aggregate group/time/eventstudy | ✅ |
 | **LPLR** | Logistic partially linear (binary Y) | ✅ |
 | **SSM** | Sample selection (`missing-at-random` / basic `nonignorable`) | ✅ |
 | **RDD** | Sharp/fuzzy RD with ML residualization + local linear | ✅ |
@@ -296,6 +296,19 @@ data_did = make_did_data(n_obs=800, theta=-2.0; seed=1)
 did = DoubleMLDID(data_did, RidgeLearner(α=0.5), clf_m; score="observational")
 fit!(did)
 summary_table(did)
+
+# Multi-period Callaway–Sant’Anna (panel long: id, t, d=first treatment period)
+panel = make_did_panel_data(n_id=200, n_t=4, theta=2.0; seed=1)
+cs = DoubleMLDIDMulti(
+    panel, RidgeLearner(α=0.5), clf_m;
+    control_group="never_treated",   # or "not_yet_treated"
+    gt_combinations=:standard,       # :all | :universal
+    anticipation_periods=0,
+)
+fit!(cs)
+att_table(cs)                        # g, t_pre, t_eval, event_time, coef, se
+aggregate(cs, :group)                # also :time, :eventstudy
+summary_table(aggregate(cs, :eventstudy))
 ```
 
 ## Run tests

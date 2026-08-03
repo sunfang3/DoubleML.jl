@@ -50,8 +50,8 @@ end
 
 function _as_basis_matrix(basis::DataFrame)
     X = Matrix{Float64}(basis)
-    names = string.(names(basis))
-    return X, names
+    col_names = string.(propertynames(basis))
+    return X, col_names
 end
 
 """

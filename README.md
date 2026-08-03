@@ -103,6 +103,7 @@ model.confint()                →    confint(model)
 | **Hyperparameter tuning** | grid / random search via `tune!` | ✅ |
 | **Sensitivity analysis** | OVB bounds (cf_y, cf_d, rho), RV / RVa (PLR, IRM) | ✅ |
 | **GATE / CATE** | Best linear predictor (`gate` / `cate` → `DoubleMLBLP`) for PLR & IRM | ✅ |
+| **Policy tree** | Weighted classification of IRM score (`policy_tree` → `DoubleMLPolicyTree`) | ✅ |
 
 ## Built-in learners
 
@@ -145,6 +146,7 @@ DoubleML/
 │   ├── tune.jl          # grid / random hyperparameter search
 │   ├── sensitivity.jl   # OVB sensitivity (Chernozhukov et al. 2022)
 │   ├── blp.jl           # BLP / CATE / GATE
+│   ├── policy_tree.jl   # optimal treatment policy trees (IRM)
 │   └── datasets.jl
 ├── test/runtests.jl
 ├── examples/plr_irm_demo.jl
@@ -223,6 +225,17 @@ confint(g; joint=true)           # simultaneous (Gaussian multiplier)
 c = cate(dml, Φ)
 summary_table(c)
 confint(c; basis=Φ)              # effect curve + CI at each row of Φ
+```
+
+**Policy tree** (optimal binary treatment rule from IRM ATE scores):
+
+```julia
+fit!(irm)   # DoubleMLIRM with score="ATE"
+pt = policy_tree(irm, data.x[:, 1:3]; depth=2, min_samples_leaf=8)
+summary_table(pt)
+print_policy_tree(pt)
+π = predict_policy(pt, data.x[:, 1:3])   # Vector{Int} in {0,1}
+policy_value(pt)                         # (1/n) Σ (2π−1) ψ̂_b
 ```
 
 ## Run tests

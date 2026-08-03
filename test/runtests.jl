@@ -406,4 +406,66 @@ using Statistics
         @test sum(G; dims=2) == ones(4, 1)  # exclusive
         @test nm == ["Group_a", "Group_b", "Group_c"]
     end
+
+    @testset "Policy tree IRM" begin
+        # DGP with heterogeneous sign: θ(x) = 1{X1 > 0} − 1{X1 ≤ 0}  (≈ ±1)
+        # so optimal policy treats when X1 > 0
+        rng = MersenneTwister(201)
+        n, p = 1200, 4
+        X = randn(rng, n, p)
+        # propensity
+        m0 = 1 ./ (1 .+ exp.(-0.5 .* X[:, 1]))
+        d = Float64.(rand(rng, n) .< m0)
+        tau = ifelse.(X[:, 1] .> 0, 1.0, -0.5)   # treat only when X1>0 is better
+        g0 = X[:, 1] .+ X[:, 2]
+        y = g0 .+ d .* tau .+ randn(rng, n)
+        data = DoubleMLData(X, y, d)
+        dml = DoubleMLIRM(
+            data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            n_folds=5, trimming_threshold=0.05, rng=MersenneTwister(202),
+        )
+        fit!(dml)
+
+        pt = policy_tree(dml, X[:, 1:3]; depth=2, min_samples_leaf=20,
+                         rng=MersenneTwister(203))
+        @test pt.fitted
+        @test pt.depth == 2
+        π = predict_policy(pt, X[:, 1:3])
+        @test all(π .∈ Ref((0, 1)))
+        @test 0 < mean(π) < 1
+
+        # policy should prefer treating when X1 > 0
+        rate_pos = mean(π[X[:, 1] .> 0])
+        rate_neg = mean(π[X[:, 1] .<= 0])
+        @test rate_pos > rate_neg + 0.15
+
+        # policy value of learned policy ≥ always-control
+        v_hat = policy_value(pt)
+        v_never = policy_value(pt.orth_signal, zeros(Int, n))
+        v_always = policy_value(pt.orth_signal, ones(Int, n))
+        @test v_hat >= v_never - 1e-8
+        # should also beat the worse of always/never
+        @test v_hat >= min(v_never, v_always) - 1e-8
+
+        st = summary_table(pt)
+        @test nrow(st) == 1
+        @test st.policy_value[1] ≈ v_hat atol=1e-12
+
+        # DataFrame features + predict
+        dfX = DataFrame(X[:, 1:3], ["f1", "f2", "f3"])
+        pt2 = policy_tree(dml, dfX; depth=2, min_samples_leaf=20, rng=MersenneTwister(204))
+        π2 = predict_policy(pt2, dfX)
+        @test length(π2) == n
+        @test all(π2 .∈ Ref((0, 1)))
+    end
+
+    @testset "Policy tree rejects non-ATE" begin
+        data = make_irm_data(n_obs=400, dim_x=3, theta=0.5; seed=210)
+        dml = DoubleMLIRM(
+            data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            n_folds=3, score="ATTE", trimming_threshold=0.05, rng=MersenneTwister(210),
+        )
+        fit!(dml)
+        @test_throws ArgumentError policy_tree(dml, data.x; depth=1)
+    end
 end

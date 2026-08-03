@@ -5,6 +5,7 @@
 
 using DoubleML
 using Random
+using Statistics
 
 println("="^60)
 println("DoubleML.jl demo  |  Julia ", VERSION)
@@ -106,11 +107,21 @@ println(summary_table(gobj))
 println(confint(gobj; joint=true, n_rep_boot=300, rng=MersenneTwister(8)))
 
 println("\n## CATE (IRM) — polynomial in X1")
-Φ = poly_basis(data_irm.x[:, 1]; degree=2)
-cobj = cate(irm, Φ)
+Phi = poly_basis(data_irm.x[:, 1]; degree=2)
+cobj = cate(irm, Phi)
 println(summary_table(cobj))
 # effect curve on a grid
 xg = collect(range(extrema(data_irm.x[:, 1])...; length=8))
 println(confint(cobj; basis=poly_basis(xg; degree=2)))
+
+# ---------- Policy tree (IRM) ----------
+println("\n## Policy tree (IRM) — depth 2 on X[:, 1:3]")
+pt = policy_tree(irm, data_irm.x[:, 1:3]; depth=2, min_samples_leaf=15,
+                 rng=MersenneTwister(9))
+println(summary_table(pt))
+println("policy_value = ", policy_value(pt))
+print_policy_tree(pt)
+pi_hat = predict_policy(pt, data_irm.x[:, 1:3])
+println("share treated by policy: ", round(mean(pi_hat); digits=3))
 
 println("\nDone.")

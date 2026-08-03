@@ -15,6 +15,7 @@ API-aligned with the Python package [DoubleML](https://docs.doubleml.org/).
 - Joint (multiplier bootstrap): `bootstrap!(m)` then `confint(m; joint=true)`
 - Sensitivity (omitted confounders): `sensitivity_analysis!` (PLR / IRM)
 - Heterogeneous effects: `gate` / `cate` → [`DoubleMLBLP`](@ref) (PLR / IRM)
+- Policy learning: `policy_tree` → [`DoubleMLPolicyTree`](@ref) (IRM ATE)
 
 # Tuning
 - `tune!(m; param_grids=...)` then `fit!(m)`
@@ -79,6 +80,12 @@ export
     gate,
     group_dummies,
     poly_basis,
+    # policy learning
+    DoubleMLPolicyTree,
+    policy_tree,
+    predict_policy,
+    policy_value,
+    print_policy_tree,
     # datasets
     make_plr_data,
     make_irm_data,
@@ -96,6 +103,7 @@ include("irm.jl")
 include("pliv.jl")
 include("iivm.jl")
 include("blp.jl")        # BLP / cate / gate (needs PLR & IRM)
+include("policy_tree.jl")  # policy learning (needs IRM + orth signal)
 include("tune.jl")
 include("datasets.jl")
 

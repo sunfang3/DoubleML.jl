@@ -101,6 +101,7 @@ model.confint()                →    confint(model)
 | **IIVM** | `LATE` | ✅ |
 | **Multiplier bootstrap** | `normal` / `Bayes` / `wild` + joint CI | ✅ |
 | **Hyperparameter tuning** | grid / random search via `tune!` | ✅ |
+| **Sensitivity analysis** | OVB bounds (cf_y, cf_d, rho), RV / RVa (PLR, IRM) | ✅ |
 
 ## Built-in learners
 
@@ -141,6 +142,7 @@ DoubleML/
 │   ├── pliv.jl          # partially linear IV
 │   ├── iivm.jl          # interactive IV (LATE)
 │   ├── tune.jl          # grid / random hyperparameter search
+│   ├── sensitivity.jl   # OVB sensitivity (Chernozhukov et al. 2022)
 │   └── datasets.jl
 ├── test/runtests.jl
 ├── examples/plr_irm_demo.jl
@@ -188,6 +190,18 @@ summary_table(dml)
 # Also works for IRM / PLIV / IIVM with the corresponding learner keys.
 # Low-level: tune a single learner
 best, res = tune_learner(RidgeLearner(), X, y, Dict(:α => [0.1, 1.0, 10.0]))
+```
+
+**Sensitivity analysis** (omitted variable bias; Chernozhukov et al. 2022; PLR & IRM):
+
+```julia
+fit!(dml)
+sensitivity_analysis!(dml; cf_y=0.04, cf_d=0.03, rho=1.0, level=0.95, null_hypothesis=0.0)
+println(sensitivity_summary(dml))
+# dml.sensitivity.theta_lower / theta_upper / rv / rva
+
+# Benchmark confounders by comparing long vs short regressions:
+# bm = sensitivity_benchmark(dml_long, dml_short)  # → (cf_y, cf_d, rho, delta_theta)
 ```
 
 ## Run tests

@@ -33,6 +33,8 @@ mutable struct DoubleMLPLR <: AbstractDoubleML
     predictions::Dict{String,Matrix{Float64}}
     treat_names::Vector{String}
     boot::Union{Nothing,BootstrapResult}
+    sens_elements::Union{Nothing,SensitivityElements}
+    sensitivity::Union{Nothing,SensitivityResult}
     fitted::Bool
     rng::AbstractRNG
 end
@@ -67,6 +69,8 @@ function DoubleMLPLR(data::DoubleMLData, ml_l, ml_m;
         Dict{String,Matrix{Float64}}(),
         [data.d_col],
         nothing,
+        nothing,
+        nothing,
         false,
         rng,
     )
@@ -90,6 +94,12 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true)
     l_preds = fill(NaN, n, n_rep)
     m_preds = fill(NaN, n, n_rep)
     g_preds = fill(NaN, n, n_rep)
+
+    sigma2_v = zeros(n_rep)
+    nu2_v = zeros(n_rep)
+    psi_s = fill(NaN, n, n_rep)
+    psi_n = fill(NaN, n, n_rep)
+    rr_m = fill(NaN, n, n_rep)
 
     for r in 1:n_rep
         folds = m.smpls[r]
@@ -122,6 +132,18 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true)
         psi_d_arr[:, r, 1] = psi_a
         l_preds[:, r] = ℓ̂
         m_preds[:, r] = m̂
+
+        # sensitivity elements
+        if m.score == "IV-type"
+            σ2, ν2, ps, pn, rr = sensitivity_elements_plr(y, d, g_preds[:, r], m̂, θ; score="IV-type")
+        else
+            σ2, ν2, ps, pn, rr = sensitivity_elements_plr(y, d, ℓ̂, m̂, θ; score="partialling out")
+        end
+        sigma2_v[r] = σ2
+        nu2_v[r] = ν2
+        psi_s[:, r] = ps
+        psi_n[:, r] = pn
+        rr_m[:, r] = rr
     end
 
     coef, se = aggregate_reps(all_coef, all_se)
@@ -132,6 +154,8 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true)
     m.psi = psi_arr
     m.psi_deriv = psi_d_arr
     m.boot = nothing
+    m.sens_elements = SensitivityElements(sigma2_v, nu2_v, psi_s, psi_n, rr_m)
+    m.sensitivity = nothing
     if store_predictions
         m.predictions = Dict("ml_l" => l_preds, "ml_m" => m_preds)
         if m.score == "IV-type"

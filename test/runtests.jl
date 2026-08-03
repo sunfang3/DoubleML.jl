@@ -258,4 +258,64 @@ using Statistics
         fit!(dml)
         @test isfinite(dml.coef[1])
     end
+
+    @testset "Sensitivity analysis PLR" begin
+        data = make_plr_data(n_obs=800, dim_x=10, theta=0.5; seed=77)
+        dml = DoubleMLPLR(data, RidgeLearner(α=0.5), RidgeLearner(α=0.5);
+                          n_folds=5, rng=MersenneTwister(77))
+        fit!(dml)
+        @test dml.sens_elements !== nothing
+        @test all(dml.sens_elements.sigma2 .> 0)
+        @test all(dml.sens_elements.nu2 .> 0)
+
+        # no confounding → bounds collapse to θ
+        r0 = sensitivity_analysis!(dml; cf_y=0.0, cf_d=0.0, rho=1.0, level=0.95)
+        @test r0.theta_lower[1] ≈ dml.coef[1] atol=1e-10
+        @test r0.theta_upper[1] ≈ dml.coef[1] atol=1e-10
+
+        r = sensitivity_analysis!(dml; cf_y=0.04, cf_d=0.03, rho=1.0, level=0.95,
+                                  null_hypothesis=0.0)
+        @test r.theta_lower[1] < dml.coef[1] < r.theta_upper[1]
+        @test r.ci_lower[1] <= r.theta_lower[1]
+        @test r.ci_upper[1] >= r.theta_upper[1]
+        @test 0 <= r.rv[1] < 1
+        @test 0 <= r.rva[1] < 1
+        # stronger confounding → wider bounds
+        r2 = sensitivity_analysis!(dml; cf_y=0.15, cf_d=0.15, rho=1.0)
+        @test (r2.theta_upper[1] - r2.theta_lower[1]) >
+              (r.theta_upper[1] - r.theta_lower[1]) - 1e-12
+        s = sensitivity_summary(dml)
+        @test occursin("Sensitivity Analysis", s)
+        @test occursin("Robustness Values", s)
+    end
+
+    @testset "Sensitivity analysis IRM" begin
+        data = make_irm_data(n_obs=1000, dim_x=5, theta=0.5; seed=88)
+        dml = DoubleMLIRM(
+            data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            n_folds=5, trimming_threshold=0.05, rng=MersenneTwister(88),
+        )
+        fit!(dml)
+        r = sensitivity_analysis!(dml; cf_y=0.03, cf_d=0.03, rho=1.0)
+        @test r.theta_lower[1] < dml.coef[1] < r.theta_upper[1]
+        @test isfinite(r.rv[1]) && isfinite(r.rva[1])
+    end
+
+    @testset "Sensitivity benchmark" begin
+        # long: all X; short: omit X1 (main confounder in make_plr_data)
+        data_long = make_plr_data(n_obs=900, dim_x=6, theta=0.5; seed=91)
+        dml_long = DoubleMLPLR(data_long, RidgeLearner(α=0.5), RidgeLearner(α=0.5);
+                               n_folds=4, rng=MersenneTwister(91))
+        fit!(dml_long)
+        # short: drop first covariate
+        Xshort = data_long.x[:, 2:end]
+        data_short = DoubleMLData(Xshort, data_long.y, data_long.d)
+        dml_short = DoubleMLPLR(data_short, RidgeLearner(α=0.5), RidgeLearner(α=0.5);
+                                n_folds=4, rng=MersenneTwister(92))
+        fit!(dml_short)
+        bm = sensitivity_benchmark(dml_long, dml_short)
+        @test 0 <= bm.cf_y < 1
+        @test 0 <= bm.cf_d < 1
+        @test isfinite(bm.delta_theta)
+    end
 end

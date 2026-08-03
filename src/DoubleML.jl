@@ -13,6 +13,7 @@ API-aligned with the Python package [DoubleML](https://docs.doubleml.org/).
 # Inference
 - Pointwise: `confint(m)`
 - Joint (multiplier bootstrap): `bootstrap!(m)` then `confint(m; joint=true)`
+- Sensitivity (omitted confounders): `sensitivity_analysis!` (PLR / IRM)
 
 # Tuning
 - `tune!(m; param_grids=...)` then `fit!(m)`
@@ -65,6 +66,12 @@ export
     tune_learner,
     TuneResult,
     cv_score,
+    # sensitivity
+    sensitivity_analysis!,
+    sensitivity_summary,
+    sensitivity_benchmark,
+    SensitivityResult,
+    SensitivityElements,
     # datasets
     make_plr_data,
     make_irm_data,
@@ -76,6 +83,7 @@ include("data.jl")
 include("sample_splitting.jl")
 include("base.jl")       # AbstractDoubleML, confint, summary_table
 include("bootstrap.jl")  # BootstrapResult, bootstrap! (needs AbstractDoubleML)
+include("sensitivity.jl")
 include("plr.jl")
 include("irm.jl")
 include("pliv.jl")

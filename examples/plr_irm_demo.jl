@@ -93,4 +93,9 @@ println("tuned ml_l: ", tres[:ml_l])
 println("tuned ml_m: ", tres[:ml_m])
 println(summary_table(dml_t))
 
+# ---------- Sensitivity analysis ----------
+sensitivity_analysis!(plr; cf_y=0.04, cf_d=0.03, rho=1.0, null_hypothesis=0.0)
+println("\n## Sensitivity analysis (PLR)")
+println(sensitivity_summary(plr))
+
 println("\nDone.")

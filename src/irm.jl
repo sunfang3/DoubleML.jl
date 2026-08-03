@@ -24,6 +24,8 @@ mutable struct DoubleMLIRM <: AbstractDoubleML
     predictions::Dict{String,Matrix{Float64}}
     treat_names::Vector{String}
     boot::Union{Nothing,BootstrapResult}
+    sens_elements::Union{Nothing,SensitivityElements}
+    sensitivity::Union{Nothing,SensitivityResult}
     fitted::Bool
     rng::AbstractRNG
 end
@@ -54,6 +56,8 @@ function DoubleMLIRM(data::DoubleMLData, ml_g, ml_m;
         fill(NaN, n, n_rep, 1),
         Dict{String,Matrix{Float64}}(),
         [data.d_col],
+        nothing,
+        nothing,
         nothing,
         false,
         rng,
@@ -98,6 +102,12 @@ function fit!(m::DoubleMLIRM; store_predictions::Bool=true)
     g1_preds = fill(NaN, n, n_rep)
     m_preds = fill(NaN, n, n_rep)
 
+    sigma2_v = zeros(n_rep)
+    nu2_v = zeros(n_rep)
+    psi_s = fill(NaN, n, n_rep)
+    psi_n = fill(NaN, n, n_rep)
+    rr_m = fill(NaN, n, n_rep)
+
     for r in 1:n_rep
         folds = m.smpls[r]
         g0, g1 = _cross_fit_g_binary(m.ml_g, X, y, d, folds)
@@ -128,6 +138,14 @@ function fit!(m::DoubleMLIRM; store_predictions::Bool=true)
         g0_preds[:, r] = g0
         g1_preds[:, r] = g1
         m_preds[:, r] = m̂
+
+        # sensitivity (ATE formula; used for ATTE as approximation)
+        σ2, ν2, ps, pn, rr = sensitivity_elements_irm_ate(y, d, g0, g1, m̂)
+        sigma2_v[r] = σ2
+        nu2_v[r] = ν2
+        psi_s[:, r] = ps
+        psi_n[:, r] = pn
+        rr_m[:, r] = rr
     end
 
     coef, se = aggregate_reps(all_coef, all_se)
@@ -135,6 +153,8 @@ function fit!(m::DoubleMLIRM; store_predictions::Bool=true)
     m.all_coef = all_coef; m.all_se = all_se
     m.psi = psi_arr; m.psi_deriv = psi_d_arr
     m.boot = nothing
+    m.sens_elements = SensitivityElements(sigma2_v, nu2_v, psi_s, psi_n, rr_m)
+    m.sensitivity = nothing
     if store_predictions
         m.predictions = Dict("ml_g0" => g0_preds, "ml_g1" => g1_preds, "ml_m" => m_preds)
     end

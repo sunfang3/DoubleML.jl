@@ -137,6 +137,8 @@ model.confint()                →    confint(model)
 | **make_pliv_cluster_data** | One-/two-way clustered PLIV DGP | ✅ |
 | **DID multi CS parity** | Python gt combos; X from min(pre,eval); not_yet max_g; per-cell fold seeds | ✅ |
 | **DMLDummy / Global learners** | Constant mean / class-rate nuisances (Python DMLDummy*) | ✅ |
+| **DID multi unit folds** | Shared unit-level sample splitting across ATTs; `set_cell_sample_splitting!` | ✅ |
+| **SSM nested_halves** | Explicit half-splits via `set_nested_halves!` for Python fold injection | ✅ |
 | **SSM** | Sample selection (`missing-at-random` / basic `nonignorable`) | ✅ |
 | **RDD** | Sharp/fuzzy RD with ML residualization + local linear | ✅ |
 | **Cluster SE** | One-way post-hoc + **cluster-in-fit** (1/2-way) for PLR/IRM | ✅ |

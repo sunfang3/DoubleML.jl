@@ -205,7 +205,9 @@ mutable struct DoubleMLDIDMulti <: AbstractDoubleML
     g_values::Vector{Int}
     t_values::Vector{Int}
     gt_combos::Vector{NTuple{3,Int}}  # (g, t_pre, t_eval)
-    smpls::Vector
+    smpls::Vector                      # optional unit-level folds (indices into all_unit_ids)
+    cell_smpls::Union{Nothing,Vector}  # optional per-ATT smpls (length n_att)
+    use_unit_sample_splitting::Bool    # shared unit-level folds for all cells
     coef::Vector{Float64}
     se::Vector{Float64}
     all_coef::Matrix{Float64}
@@ -235,6 +237,7 @@ function DoubleMLDIDMulti(data::DoubleMLData, ml_g, ml_m=nothing;
                           ps_processor::Union{Nothing,PSProcessor}=nothing,
                           in_sample_normalization::Bool=true,
                           never_treated_value=nothing,
+                          use_unit_sample_splitting::Bool=true,
                           rng::AbstractRNG=Random.default_rng())
     data.id === nothing && throw(ArgumentError("panel data requires id"))
     data.t === nothing && throw(ArgumentError("panel data requires t"))
@@ -261,21 +264,114 @@ function DoubleMLDIDMulti(data::DoubleMLData, ml_g, ml_m=nothing;
 
     n_att = length(combos)
     names = ["ATT(g=$g,t_pre=$tp,t=$te)" for (g, tp, te) in combos]
+    all_uids = sort(unique(Int.(data.id)))
     return DoubleMLDIDMulti(
         data, ml_g, ml_m, cg, anticipation_periods,
         n_folds, n_rep, sc, Float64(trimming_threshold),
         resolve_ps_processor(ps_processor, trimming_threshold),
         in_sample_normalization,
         never, gvals, tvals, combos,
-        Vector{Any}(),
+        Vector{Any}(), nothing, use_unit_sample_splitting,
         Float64[], Float64[],
         zeros(n_att, n_rep), zeros(n_att, n_rep),
         Array{Float64,3}(undef, 0, 0, 0), Array{Float64,3}(undef, 0, 0, 0),
         Dict{String,Any}(), names,
-        nothing, DoubleMLDID[], Vector{Int}[], Int[],
+        nothing, DoubleMLDID[], Vector{Int}[], all_uids,
         Array{Float64,3}(undef, 0, 0, 0),
         false, rng,
     )
+end
+
+"""
+    set_sample_splitting!(m::DoubleMLDIDMulti, smpls)
+
+Set **unit-level** sample splits shared across all group–time ATTs.
+`smpls` is a vector of length `n_rep`, each entry a vector of
+`(train=..., test=...)` folds with indices into `m.all_unit_ids` (1 … n_units).
+
+Enables Python-style shared-panel cross-fitting for numerical alignment.
+"""
+function set_sample_splitting!(m::DoubleMLDIDMulti, smpls)
+    length(smpls) == m.n_rep ||
+        throw(ArgumentError("smpls length $(length(smpls)) must equal n_rep=$(m.n_rep)"))
+    n_u = length(m.all_unit_ids)
+    for rep in smpls
+        for fold in rep
+            all(1 .<= fold.train .<= n_u) || throw(ArgumentError("train indices out of 1:n_units"))
+            all(1 .<= fold.test .<= n_u) || throw(ArgumentError("test indices out of 1:n_units"))
+        end
+    end
+    m.smpls = smpls
+    m.use_unit_sample_splitting = true
+    m.cell_smpls = nothing
+    m.fitted = false
+    return m
+end
+
+"""
+    set_cell_sample_splitting!(m::DoubleMLDIDMulti, cell_smpls)
+
+Set **per-ATT** sample splits. `cell_smpls` is a vector of length `n_att`, each
+entry the usual `smpls` structure for that cell's cross-section (indices into
+the cell's unit rows).
+"""
+function set_cell_sample_splitting!(m::DoubleMLDIDMulti, cell_smpls)
+    length(cell_smpls) == length(m.gt_combos) ||
+        throw(ArgumentError("cell_smpls length must equal n_att=$(length(m.gt_combos))"))
+    m.cell_smpls = cell_smpls
+    m.use_unit_sample_splitting = false
+    m.fitted = false
+    return m
+end
+
+"""
+Project unit-level folds onto a cell subset (indices into `subset_uids`).
+
+Units not in the subset are dropped from both train and test; train is
+rebuilt as complement of test within the subset so every subset row appears
+in exactly one test fold (empty folds are skipped / merged).
+"""
+function _project_unit_folds_to_subset(unit_smpls, all_unit_ids::Vector{Int},
+                                       subset_uids::Vector{Int})
+    n = length(subset_uids)
+    row_of = Dict{Int,Int}(u => i for (i, u) in enumerate(subset_uids))
+    mapped_reps = Vector{Any}(undef, length(unit_smpls))
+    for (r, folds) in enumerate(unit_smpls)
+        proj = NamedTuple{(:train, :test),Tuple{Vector{Int},Vector{Int}}}[]
+        claimed = falses(n)
+        for fold in folds
+            te = Int[]
+            for i in fold.test
+                u = all_unit_ids[i]
+                if haskey(row_of, u)
+                    push!(te, row_of[u])
+                    claimed[row_of[u]] = true
+                end
+            end
+            isempty(te) && continue
+            tr = setdiff(1:n, te)
+            # require non-empty train when possible
+            isempty(tr) && length(te) >= 2 && (tr = te[1:1]; te = te[2:end])
+            isempty(tr) && continue
+            push!(proj, (train=sort(tr), test=sort(te)))
+        end
+        # any unclaimed rows → append to last test or create fold
+        unclaimed = findall(.!claimed)
+        if !isempty(unclaimed)
+            if isempty(proj)
+                # fallback: single fold leave-one-out style not available — use K from n
+                mapped_reps[r] = make_folds(n, min(3, n); shuffle_rows=false)
+                continue
+            end
+            # put unclaimed into first fold's test, remove from its train
+            f0 = proj[1]
+            te = sort(unique(vcat(f0.test, unclaimed)))
+            tr = setdiff(1:n, te)
+            proj[1] = (train=sort(tr), test=te)
+        end
+        mapped_reps[r] = proj
+    end
+    return mapped_reps
 end
 
 """
@@ -348,10 +444,15 @@ function fit!(m::DoubleMLDIDMulti; store_predictions::Bool=false)
     m.unit_ids_per_att = Vector{Int}[]
 
     # all panel units for aligned IF space
-    m.all_unit_ids = sort(unique(m.data.id))
+    m.all_unit_ids = sort(unique(Int.(m.data.id)))
     n_u = length(m.all_unit_ids)
     id_index = Dict(u => i for (i, u) in enumerate(m.all_unit_ids))
     if_units = zeros(n_u, n_rep, n_att)
+
+    # unit-level folds (shared across ATTs) when requested
+    if m.use_unit_sample_splitting && isempty(m.smpls) && m.cell_smpls === nothing
+        m.smpls = make_repeated_folds(n_u, m.n_folds, n_rep; rng=m.rng)
+    end
 
     psi_list = Matrix{Float64}[]
     psi_d_list = Matrix{Float64}[]
@@ -362,8 +463,6 @@ function fit!(m::DoubleMLDIDMulti; store_predictions::Bool=false)
             m.data, g, t_pre, t_eval,
             m.control_group, m.never_treated_value, m.anticipation_periods, m.t_values,
         )
-        # Per-cell RNG seed from (g,t_pre,t_eval) for stable, independent folds
-        # (Python each binary model draws its own split independently)
         cell_seed = UInt(hash((g, t_pre, t_eval, m.n_folds), UInt(0xD1D)))
         did = DoubleMLDID(
             cs, clone(m.ml_g), m.score == "observational" ? clone(m.ml_m) : nothing;
@@ -372,8 +471,27 @@ function fit!(m::DoubleMLDIDMulti; store_predictions::Bool=false)
             in_sample_normalization=m.in_sample_normalization,
             trimming_threshold=m.trimming_threshold,
             ps_processor=m.ps_processor,
+            draw_sample_splitting=false,
             rng=MersenneTwister(cell_seed),
         )
+        # choose sample splits for this cell
+        if m.cell_smpls !== nothing
+            set_sample_splitting!(did, m.cell_smpls[j])
+        elseif m.use_unit_sample_splitting && !isempty(m.smpls)
+            mapped = _project_unit_folds_to_subset(m.smpls, m.all_unit_ids, uids)
+            # mapped may have fewer folds; clamp n_folds for this cell
+            if !isempty(mapped) && !isempty(mapped[1])
+                did.n_folds = length(mapped[1])
+                set_sample_splitting!(did, mapped)
+            else
+                # fallback independent folds
+                did.smpls = make_repeated_folds(n_obs(cs), m.n_folds, n_rep;
+                                                rng=MersenneTwister(cell_seed))
+            end
+        else
+            did.smpls = make_repeated_folds(n_obs(cs), m.n_folds, n_rep;
+                                            rng=MersenneTwister(cell_seed))
+        end
         fit!(did; store_predictions=store_predictions)
         push!(m.att_models, did)
         push!(m.unit_ids_per_att, uids)

@@ -35,6 +35,9 @@ mutable struct DoubleMLSSM <: AbstractDoubleML
     normalize_ipw::Bool
     # Python nonignorable nested CF uses train_test_split(..., random_state=42)
     nested_random_state::Int
+    # Optional explicit nested halves: length n_rep, each entry length n_folds of
+    # (half1::Vector{Int}, half2::Vector{Int}) over the outer train indices (global 1:n)
+    nested_halves::Union{Nothing,Vector}
     smpls::Vector
     coef::Vector{Float64}
     se::Vector{Float64}
@@ -59,6 +62,7 @@ function DoubleMLSSM(data::DoubleMLData, ml_g, ml_m, ml_pi;
                      ps_processor::Union{Nothing,PSProcessor}=nothing,
                      normalize_ipw::Bool=false,
                      nested_random_state::Integer=42,
+                     nested_halves=nothing,
                      draw_sample_splitting::Bool=true,
                      rng::AbstractRNG=Random.default_rng())
     sc = String(score)
@@ -78,13 +82,32 @@ function DoubleMLSSM(data::DoubleMLData, ml_g, ml_m, ml_pi;
     psp = resolve_ps_processor(ps_processor, trimming_threshold)
     return DoubleMLSSM(
         data, ml_g, ml_m, ml_pi, n_folds, n_rep, sc, Float64(trimming_threshold),
-        psp, normalize_ipw, Int(nested_random_state), smpls,
+        psp, normalize_ipw, Int(nested_random_state), nested_halves, smpls,
         Float64[], Float64[],
         zeros(1, n_rep), zeros(1, n_rep),
         fill(NaN, n, n_rep, 1), fill(NaN, n, n_rep, 1),
         Dict{String,Matrix{Float64}}(), Dict{String,Any}(),
         [data.d_col], nothing, false, rng, Dict{String,Any}(),
     )
+end
+
+"""
+    set_nested_halves!(m::DoubleMLSSM, nested_halves)
+
+Provide explicit nested half-splits for nonignorable SSM.
+
+`nested_halves` is a vector of length `n_rep`; each entry is a vector of length
+`n_folds` of `(half1, half2)` index vectors (global 1…n indices, typically
+subsets of the outer fold's train indices).
+"""
+function set_nested_halves!(m::DoubleMLSSM, nested_halves)
+    m.score == "nonignorable" ||
+        @warn "nested halves only used for score=\"nonignorable\""
+    length(nested_halves) == m.n_rep ||
+        throw(ArgumentError("nested_halves length must equal n_rep=$(m.n_rep)"))
+    m.nested_halves = nested_halves
+    m.fitted = false
+    return m
 end
 
 function _cross_fit_g_sel(ml_g, X, y, d, s, d_level, folds)
@@ -147,6 +170,7 @@ end
 """Nested CF for nonignorable SSM (Python DoubleMLSSM score='nonignorable')."""
 function _ssm_nonignorable_nuisance(ml_g, ml_m, ml_pi, X, y, d, s, z, folds, ε;
                                     nested_random_state::Int=42,
+                                    nested_halves_fold=nothing,
                                     store_models::Bool=false)
     n = length(y)
     π̂ = fill(NaN, n)
@@ -160,13 +184,17 @@ function _ssm_nonignorable_nuisance(ml_g, ml_m, ml_pi, X, y, d, s, z, folds, ε;
     dx = hcat(X, d, z)
     strata = Int.(d .+ 2 .* s)  # 0,1,2,3
 
-    for (train, test) in folds
-        # Python: train_test_split(..., random_state=42) — reseed every fold
-        rng_nest = MersenneTwister(nested_random_state)
-        tr1, tr2 = _stratified_half_split(train, strata, rng_nest)
+    for (k, (train, test)) in enumerate(folds)
+        if nested_halves_fold !== nothing
+            tr1, tr2 = nested_halves_fold[k]
+            tr1 = Int.(tr1); tr2 = Int.(tr2)
+        else
+            # Python: train_test_split(..., random_state=42) — reseed every fold
+            rng_nest = MersenneTwister(nested_random_state)
+            tr1, tr2 = _stratified_half_split(train, strata, rng_nest)
+        end
         isempty(tr1) && error("Empty nested half1 for π — check strata balance")
         isempty(tr2) && error("Empty nested half2 for m/g — check strata balance")
-
         # half 1: fit π = P(S=1 | D,X,Z)
         mpi = clone(ml_pi)
         fit!(mpi, dx[tr1, :], s[tr1])
@@ -237,9 +265,15 @@ function fit!(m::DoubleMLSSM; store_predictions::Bool=true, store_models::Bool=f
             g0 = _cross_fit_g_sel(m.ml_g, X, y_safe, d, s, 0.0, folds)
         else
             z = instrument(data)
+            halves = if m.nested_halves !== nothing
+                m.nested_halves[r]
+            else
+                nothing
+            end
             π̂, m̂, g0, g1, fold_models = _ssm_nonignorable_nuisance(
                 m.ml_g, m.ml_m, m.ml_pi, X, y_safe, d, s, z, folds, ε;
                 nested_random_state=m.nested_random_state,
+                nested_halves_fold=halves,
                 store_models=store_models,
             )
         end

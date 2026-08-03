@@ -50,6 +50,7 @@ using DecisionTree
 export
     # data
     DoubleMLData,
+    n_obs,
     n_instr,
     # learners
     AbstractLearner,
@@ -98,6 +99,7 @@ export
     overall_aggregation_weights,
     n_aggregations,
     recode_never_treated,
+    set_cell_sample_splitting!,
     DoubleMLLPLR,
     DoubleMLPLPR,
     DoubleMLSSM,
@@ -110,6 +112,7 @@ export
     BootstrapResult,
     p_adjust,
     set_sample_splitting!,
+    set_nested_halves!,
     set_ml_nuisance_params!,
     evaluate_learners,
     effects_table,

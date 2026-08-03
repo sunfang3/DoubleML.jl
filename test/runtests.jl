@@ -1317,24 +1317,33 @@ using Statistics
         @test GlobalRegressor === DMLDummyRegressor
         @test DoubleML.is_classifier(DMLDummyClassifier())
 
-        # DID multi with dummy + Inf never-treated runs
+        # DID multi with dummy + Inf never-treated runs (unit-level shared folds)
         base = make_did_panel_data(n_id=80, n_t=4, dim_x=2, theta=1.5; seed=1001)
         data = recode_never_treated(base; from=0.0, to=Inf)
         multi = DoubleMLDIDMulti(
             data, DMLDummyRegressor(), DMLDummyClassifier();
-            n_folds=3, rng=MersenneTwister(1001),
+            n_folds=3, use_unit_sample_splitting=true, rng=MersenneTwister(1001),
         )
         @test isinf(multi.never_treated_value)
         fit!(multi)
         @test multi.fitted
         @test all(isfinite, multi.coef)
-        # cell RNG deterministic: refit same
+        @test !isempty(multi.smpls)  # unit folds drawn
+        # same unit smpls → same coefs
         multi2 = DoubleMLDIDMulti(
             data, DMLDummyRegressor(), DMLDummyClassifier();
-            n_folds=3, rng=MersenneTwister(9999),  # outer rng ignored for cell seeds
+            n_folds=3, use_unit_sample_splitting=true, rng=MersenneTwister(1001),
         )
+        set_sample_splitting!(multi2, multi.smpls)
         fit!(multi2)
         @test multi2.coef ≈ multi.coef atol=1e-10
+        # independent cell folds mode still works
+        multi3 = DoubleMLDIDMulti(
+            data, DMLDummyRegressor(), DMLDummyClassifier();
+            n_folds=3, use_unit_sample_splitting=false, rng=MersenneTwister(1002),
+        )
+        fit!(multi3)
+        @test multi3.fitted && all(isfinite, multi3.coef)
     end
 
     @testset "SSM nested_random_state + tune_optuna extensions + cluster PLIV" begin
@@ -1355,6 +1364,27 @@ using Statistics
         ssm2.smpls = ssm.smpls
         fit!(ssm2)
         @test ssm2.coef[1] ≈ ssm.coef[1] atol=1e-10
+        # explicit nested halves
+        halves = Vector{Any}(undef, ssm.n_rep)
+        for r in 1:ssm.n_rep
+            folds = ssm.smpls[r]
+            halves[r] = [
+                begin
+                    tr = f.train
+                    mid = max(1, length(tr) ÷ 2)
+                    (tr[1:mid], tr[mid+1:end])
+                end for f in folds
+            ]
+        end
+        ssm3 = DoubleMLSSM(sdata, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5),
+                           LogisticRegressionLearner(α=0.5);
+                           score="nonignorable", n_folds=3,
+                           draw_sample_splitting=false, rng=MersenneTwister(992))
+        ssm3.smpls = ssm.smpls
+        set_nested_halves!(ssm3, halves)
+        fit!(ssm3)
+        @test isfinite(ssm3.coef[1])
+        @test n_obs(sdata) == length(sdata.y)
 
         # tune_optuna! DID / PLIV smoke
         ddata = make_did_data(n_obs=350, theta=-1.0; seed=992)

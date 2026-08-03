@@ -14,3 +14,5 @@ Manifest.toml
 # Local
 docs/build/
 docs/site/
+.venv-dml/
+benchmarks/compare_py_jl/data/

@@ -335,9 +335,27 @@ plpr = DoubleMLPLPR(panel_plpr, RidgeLearner(α=0.5), RidgeLearner(α=0.5))
 fit!(plpr)
 
 # Cluster-robust SE (any fitted model with psi stored)
-cluster = rand(1:50, n_obs(data))   # example cluster ids
+cluster = rand(1:50, length(data.y))
 cluster_se(dml; cluster=cluster)
 apply_cluster_se!(dml; cluster=cluster)
+
+# Framework: joint IF algebra (Python DoubleMLFramework)
+f1 = construct_framework(dml)
+f2 = construct_framework(irm)
+fc = concat(f1, f2)
+bootstrap!(fc; n_rep_boot=200)
+confint(fc; joint=true)
+contrast = f2 - f1          # or 2*f1, f1+f2
+
+# Multi-treatment PLR
+multi = make_plr_multi_data(n_obs=800, theta=[0.5, -0.3]; seed=4)
+plr_m = DoubleMLPLR(multi, RidgeLearner(α=0.5), RidgeLearner(α=0.5))
+fit!(plr_m)                 # coef length 2
+
+# Cluster-in-fit (splits never split clusters)
+cdata = make_plr_cluster_data(n_obs=600, n_clusters=40, theta=0.5; seed=5)
+plr_c = DoubleMLPLR(cdata, RidgeLearner(α=0.5), RidgeLearner(α=0.5); n_folds=3)
+fit!(plr_c)                 # SE uses cluster formula
 ```
 
 ## Run tests

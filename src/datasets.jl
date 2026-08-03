@@ -134,3 +134,29 @@ function make_iivm_data(; n_obs::Int=1000, dim_x::Int=10, theta::Real=0.5,
     end
     return data
 end
+
+"""
+    make_did_data(; n_obs=500, dim_x=4, theta=-2.0, seed=nothing) -> DoubleMLData
+
+Two-period DiD DGP in the spirit of Sant'Anna & Zhao (2020).
+
+Returns `y = Y₁ − Y₀` (outcome change), binary treatment group `d`, and covariates.
+True ATT is approximately `theta` under conditional parallel trends.
+"""
+function make_did_data(; n_obs::Int=500, dim_x::Int=4, theta::Real=-2.0,
+                       seed=nothing)
+    rng = seed === nothing ? Random.default_rng() : MersenneTwister(seed)
+    dim_x >= 1 || throw(ArgumentError("dim_x ≥ 1"))
+    X = randn(rng, n_obs, dim_x)
+    # propensity depending on X
+    logits = 0.5 .* X[:, 1] .- 0.25 .* (dim_x >= 2 ? X[:, 2] : 0.0)
+    p = 1 ./ (1 .+ exp.(-logits))
+    d = Float64.(rand(rng, n_obs) .< p)
+    # baseline and trend
+    g0 = 2 .* X[:, 1] .+ (dim_x >= 2 ? X[:, 2] : 0.0)
+    # Y0, Y1 under control / treated
+    y0 = g0 .+ randn(rng, n_obs)
+    y1 = g0 .+ 1.0 .+ theta .* d .+ randn(rng, n_obs)  # common trend + ATT on treated
+    y = y1 .- y0
+    return DoubleMLData(X, y, d; y_col="y", d_col="d")
+end

@@ -107,6 +107,8 @@ model.confint()                →    confint(model)
 | **PQ / QTE** | Potential quantiles & QTE (`score="PQ"`) | ✅ |
 | **LPQ / LQTE** | Local (complier) potential quantiles (`score="LPQ"`, needs Z) | ✅ |
 | **CVaR / CVaR-TE** | Conditional value at risk of potential outcomes (`score="CVaR"`) | ✅ |
+| **APO / APOS** | Average potential outcomes + causal contrasts | ✅ |
+| **DID** | Two-period ATT (`observational` / `experimental`) | ✅ |
 
 ## Built-in learners
 
@@ -154,6 +156,8 @@ DoubleML/
 │   ├── lpq.jl           # local potential quantiles (IV)
 │   ├── cvar.jl          # CVaR of potential outcomes
 │   ├── qte.jl           # QTE / LQTE / CVaR-TE
+│   ├── apo.jl           # APO / APOS
+│   ├── did.jl           # two-period DiD
 │   └── datasets.jl
 ├── test/runtests.jl
 ├── examples/plr_irm_demo.jl
@@ -267,6 +271,22 @@ cte  = DoubleMLQTE(data_irm,  RidgeLearner(α=0.5), clf_m; quantiles=[0.5], scor
 fit!(qte); fit!(lqte); fit!(cte)
 summary_table(qte)
 # underlying models: *.modellist_0 / *.modellist_1
+```
+
+**APO / APOS** and **two-period DiD**:
+
+```julia
+# Average potential outcomes
+apos = DoubleMLAPOS(data_irm, RidgeLearner(α=0.5), clf_m, [0.0, 1.0]; n_folds=5)
+fit!(apos)
+summary_table(apos)
+causal_contrast(apos, 0.0)   # ATE ≈ APO(1) − APO(0)
+
+# Two-period DiD (y = Y_post − Y_pre)
+data_did = make_did_data(n_obs=800, theta=-2.0; seed=1)
+did = DoubleMLDID(data_did, RidgeLearner(α=0.5), clf_m; score="observational")
+fit!(did)
+summary_table(did)
 ```
 
 ## Run tests

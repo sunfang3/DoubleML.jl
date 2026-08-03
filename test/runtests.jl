@@ -617,4 +617,55 @@ using Statistics
             score="FOO",
         )
     end
+
+    @testset "APO and APOS" begin
+        data = make_irm_data(n_obs=1200, dim_x=4, theta=0.5; seed=501)
+        # APO(1) − APO(0) ≈ ATE ≈ 0.5
+        apo1 = DoubleMLAPO(
+            data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            treatment_level=1, n_folds=3, trimming_threshold=0.05,
+            rng=MersenneTwister(501),
+        )
+        apo0 = DoubleMLAPO(
+            data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            treatment_level=0, n_folds=3, trimming_threshold=0.05,
+            rng=MersenneTwister(502),
+        )
+        fit!(apo1); fit!(apo0)
+        @test isfinite(apo1.coef[1]) && isfinite(apo0.coef[1])
+        @test abs((apo1.coef[1] - apo0.coef[1]) - 0.5) < 0.45
+
+        apos = DoubleMLAPOS(
+            data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5),
+            [0.0, 1.0];
+            n_folds=3, trimming_threshold=0.05, rng=MersenneTwister(503),
+        )
+        fit!(apos)
+        @test length(apos.coef) == 2
+        ct = causal_contrast(apos, 0.0)
+        @test nrow(ct) == 1
+        @test abs(ct.coef[1] - 0.5) < 0.45
+        @test ct.std_err[1] > 0
+    end
+
+    @testset "DID two-period ATT" begin
+        data = make_did_data(n_obs=1000, dim_x=4, theta=-2.0; seed=511)
+        did = DoubleMLDID(
+            data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            n_folds=3, score="observational", trimming_threshold=0.05,
+            rng=MersenneTwister(511),
+        )
+        fit!(did)
+        @test isfinite(did.coef[1])
+        @test abs(did.coef[1] - (-2.0)) < 0.8
+        @test did.se[1] > 0
+        # experimental score still runs
+        did_e = DoubleMLDID(
+            data, RidgeLearner(α=0.5), nothing;
+            n_folds=3, score="experimental",
+            rng=MersenneTwister(512),
+        )
+        fit!(did_e)
+        @test isfinite(did_e.coef[1])
+    end
 end

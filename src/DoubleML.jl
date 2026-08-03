@@ -13,6 +13,8 @@ API-aligned with the Python package [DoubleML](https://docs.doubleml.org/).
 - [`DoubleMLLPQ`](@ref) — local potential quantiles (IV / compliers)
 - [`DoubleMLCVAR`](@ref) — CVaR of potential outcomes
 - [`DoubleMLQTE`](@ref) — QTE / LQTE / CVaR-TE (`score="PQ"|"LPQ"|"CVaR"`)
+- [`DoubleMLAPO`](@ref) / [`DoubleMLAPOS`](@ref) — average potential outcomes
+- [`DoubleMLDID`](@ref) — two-period difference-in-differences ATT
 
 # Inference
 - Pointwise: `confint(m)`
@@ -66,6 +68,10 @@ export
     DoubleMLLPQ,
     DoubleMLCVAR,
     DoubleMLQTE,
+    DoubleMLAPO,
+    DoubleMLAPOS,
+    causal_contrast,
+    DoubleMLDID,
     confint,
     summary_table,
     dml_summary,
@@ -98,7 +104,8 @@ export
     make_plr_data,
     make_irm_data,
     make_pliv_data,
-    make_iivm_data
+    make_iivm_data,
+    make_did_data
 
 include("learners.jl")
 include("data.jl")
@@ -116,6 +123,8 @@ include("pq.jl")         # potential quantiles (nonlinear DML)
 include("lpq.jl")        # local potential quantiles (IV)
 include("cvar.jl")       # CVaR of potential outcomes
 include("qte.jl")        # QTE / LQTE / CVaR-TE
+include("apo.jl")        # APO / APOS
+include("did.jl")        # two-period DiD
 include("tune.jl")
 include("datasets.jl")
 

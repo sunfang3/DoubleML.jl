@@ -90,6 +90,7 @@ export
     DoubleMLPLPR,
     DoubleMLSSM,
     DoubleMLRDD,
+    RDFlex,
     confint,
     summary_table,
     dml_summary,

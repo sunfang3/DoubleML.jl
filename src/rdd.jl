@@ -1,17 +1,23 @@
-# Regression Discontinuity (RDFlex-style residualization + local linear)
-# Python: doubleml.rdd.RDFlex (simplified; no rdrobust dependency)
+# Regression Discontinuity — RDFlex-style (Python doubleml.rdd.RDFlex)
+# Residualization of Y (and D if fuzzy) with ML, then local linear RD.
+# No rdrobust dependency: bandwidth via ROT / iterative residual ROT.
 
 """
     DoubleMLRDD
 
-Sharp or fuzzy RDD with ML residualization of outcome (and treatment) near the cutoff,
-then weighted local linear estimation (triangular kernel).
+Sharp or fuzzy RDD with ML residualization near the cutoff, then weighted
+local linear estimation. Aligns with Python `RDFlex` (without `rdrobust`).
+
+# Keywords
+- `cutoff` — cutoff on the running variable
+- `fuzzy` — fuzzy design (needs `ml_m`)
+- `h` / `h_fs` — fixed final bandwidth / initial first-stage bandwidth (`NaN` → ROT)
+- `fs_kernel` — `"triangular"` | `"uniform"` | `"epanechnikov"`
+- `fs_specification` — `"cutoff"` | `"cutoff and score"` | `"interacted cutoff and score"`
+- `n_iterations` — iterative bandwidth updates (default 2, as Python)
 
 # Data
-[`DoubleMLData`](@ref) with:
-- `score` — running variable
-- `y`, `d` (for sharp, `d = 1{score ≥ cutoff}` is fine; for fuzzy, actual treatment)
-- `x` — covariates for residualization
+[`DoubleMLData`](@ref) with `score` (running variable), `y`, `d`, `x`.
 """
 mutable struct DoubleMLRDD <: AbstractDoubleML
     data::DoubleMLData
@@ -21,8 +27,11 @@ mutable struct DoubleMLRDD <: AbstractDoubleML
     fuzzy::Bool
     n_folds::Int
     n_rep::Int
-    h::Float64                 # bandwidth (if NaN, rule-of-thumb)
-    kernel::String
+    h::Float64                 # fixed final bandwidth if provided
+    h_fs::Float64              # initial first-stage bandwidth
+    fs_kernel::String
+    fs_specification::String
+    n_iterations::Int
     smpls::Vector
     coef::Vector{Float64}
     se::Vector{Float64}
@@ -36,7 +45,10 @@ mutable struct DoubleMLRDD <: AbstractDoubleML
     fitted::Bool
     rng::AbstractRNG
     h_used::Float64
+    all_h::Vector{Float64}
 end
+
+const _FS_SPECS = ("cutoff", "cutoff and score", "interacted cutoff and score")
 
 function DoubleMLRDD(data::DoubleMLData, ml_g, ml_m=nothing;
                      cutoff::Real=0.0,
@@ -44,28 +56,38 @@ function DoubleMLRDD(data::DoubleMLData, ml_g, ml_m=nothing;
                      n_folds::Int=5,
                      n_rep::Int=1,
                      h::Real=NaN,
-                     kernel::AbstractString="triangular",
+                     h_fs::Real=NaN,
+                     fs_kernel::AbstractString="triangular",
+                     fs_specification::AbstractString="cutoff",
+                     n_iterations::Int=2,
                      draw_sample_splitting::Bool=true,
                      rng::AbstractRNG=Random.default_rng())
     data.score === nothing && throw(ArgumentError("RDD requires running variable in data.score"))
     fuzzy && ml_m === nothing && throw(ArgumentError("fuzzy RDD requires ml_m"))
-    kernel in ("triangular", "uniform", "epanechnikov") ||
-        throw(ArgumentError("kernel must be triangular/uniform/epanechnikov"))
+    fs_kernel in ("triangular", "uniform", "epanechnikov") ||
+        throw(ArgumentError("fs_kernel must be triangular/uniform/epanechnikov"))
+    fs_specification in _FS_SPECS ||
+        throw(ArgumentError("fs_specification must be one of $_FS_SPECS"))
+    n_iterations >= 1 || throw(ArgumentError("n_iterations ≥ 1"))
 
     smpls = draw_sample_splitting ?
         make_repeated_folds(n_obs(data), n_folds, n_rep; rng=rng) :
         Vector{Any}()
     n = n_obs(data)
     return DoubleMLRDD(
-        data, ml_g, ml_m, Float64(cutoff), fuzzy, n_folds, n_rep, Float64(h),
-        String(kernel), smpls,
+        data, ml_g, ml_m, Float64(cutoff), fuzzy, n_folds, n_rep,
+        Float64(h), Float64(h_fs), String(fs_kernel), String(fs_specification),
+        n_iterations, smpls,
         Float64[], Float64[],
         zeros(1, n_rep), zeros(1, n_rep),
         fill(NaN, n, n_rep, 1), fill(NaN, n, n_rep, 1),
         Dict{String,Any}(), ["LATE_RD"],
-        nothing, false, rng, NaN,
+        nothing, false, rng, NaN, fill(NaN, n_rep),
     )
 end
+
+"""Alias matching Python class name."""
+const RDFlex = DoubleMLRDD
 
 function _kernel_w(u::AbstractVector, kernel::String)
     a = abs.(u)
@@ -82,28 +104,76 @@ function _rot_bandwidth(score::AbstractVector, cutoff::Real)
     s = score .- cutoff
     n = length(s)
     σ = std(s)
-    # Silverman-like ROT for RD
     return 1.84 * σ * n^(-1 / 5)
 end
 
-"""Local linear weighted regression of y on [1, s, d, d*s] or sharp: treat = 1{s≥0}."""
+"""Build first-stage design features Z and left/right evaluation points (at cutoff)."""
+function _fs_design(s::AbstractVector, spec::String)
+    z = Float64.(s .>= 0)  # intended treatment
+    n = length(s)
+    if spec == "cutoff"
+        Z = reshape(z, n, 1)
+        ZL = zeros(n, 1)
+        ZR = ones(n, 1)
+    elseif spec == "cutoff and score"
+        Z = hcat(z, s)
+        ZL = hcat(zeros(n), s)           # left: T=0, keep score
+        ZR = hcat(ones(n), zeros(n))     # at cutoff from right: T=1, score=0
+        # Python: Z_left = zeros_like(Z); Z_right = [1, 0] for score at 0
+        ZL = zeros(n, 2)
+        ZR = hcat(ones(n), zeros(n))
+    else  # interacted cutoff and score
+        Z = hcat(z, z .* s, s)
+        ZL = zeros(n, 3)
+        ZR = hcat(ones(n), zeros(n), zeros(n))
+    end
+    return Z, ZL, ZR, z
+end
+
+"""Cross-fit η = (μ_left + μ_right)/2 with sample weights and fs design."""
+function _fit_nuisance_rdd(ml, outcome, X, Z, ZL, ZR, weights, folds; classifier::Bool=false)
+    n = length(outcome)
+    muL = fill(NaN, n)
+    muR = fill(NaN, n)
+    ZX = hcat(Z, X)
+    ZXL = hcat(ZL, X)
+    ZXR = hcat(ZR, X)
+    for (train, test) in folds
+        # drop zero-weight train points for stability
+        tr = train[weights[train] .> 0]
+        length(tr) < 5 && continue
+        m = clone(ml)
+        # weighted fit via case weights replication is heavy; use weighted least squares
+        # for generic learners: fit on positive-weight rows (approx)
+        fit!(m, ZX[tr, :], outcome[tr])
+        if classifier || is_classifier(m)
+            muL[test] = predict_proba(m, ZXL[test, :])
+            muR[test] = predict_proba(m, ZXR[test, :])
+        else
+            muL[test] = predict(m, ZXL[test, :])
+            muR[test] = predict(m, ZXR[test, :])
+        end
+    end
+    for i in 1:n
+        if !isfinite(muL[i]); muL[i] = isfinite(muR[i]) ? muR[i] : 0.0; end
+        if !isfinite(muR[i]); muR[i] = isfinite(muL[i]) ? muL[i] : 0.0; end
+    end
+    return 0.5 .* (muL .+ muR)
+end
+
+"""Local linear weighted regression of y on [1, s, d, d*s]."""
 function _local_linear_rd(s, y, d, w)
     n = length(y)
-    # design: intercept, running, treatment, interaction
     X = hcat(ones(n), s, d, d .* s)
-    # weighted LS: sqrt(w) X, sqrt(w) y
     sw = sqrt.(max.(w, 0.0))
     Xw = X .* sw
     yw = y .* sw
-    # drop zero-weight rows
     keep = sw .> 0
     sum(keep) < 8 && error("Too few observations inside bandwidth for RDD")
     Xk = Xw[keep, :]
     yk = yw[keep]
     β = Xk \ yk
-    # treatment effect is coefficient on d (at s=0)
     resid = y .- X * β
-    # HC0 se for β[3]
     bread = inv(Xk' * Xk)
     meat = Xk' * (Xk .* (resid[keep] .^ 2))
     Ω = bread * meat * bread
@@ -111,22 +181,37 @@ function _local_linear_rd(s, y, d, w)
     return β[3], se, resid
 end
 
+"""Simple IK-style / ROT bandwidth on residualized outcome near cutoff."""
+function _bandwidth_from_residuals(s::AbstractVector, My::AbstractVector; h_hint::Real=NaN)
+    # use ROT on running variable; optionally shrink toward residual scale
+    h0 = isnan(h_hint) ? _rot_bandwidth(s, 0.0) : h_hint
+    # local residual variance near cutoff
+    near = abs.(s) .< max(h0, eps())
+    if count(near) >= 20
+        σ = std(@view My[near])
+        n = count(near)
+        # Silverman on residualized outcome density scale
+        h1 = 1.84 * max(σ, 1e-6) * n^(-1 / 5)
+        # geometric blend
+        return sqrt(h0 * max(h1, 0.25 * h0))
+    end
+    return h0
+end
+
 function fit!(m::DoubleMLRDD; store_predictions::Bool=true)
     data = m.data
     X, y = data.x, data.y
     s_raw = data.score
     cutoff = m.cutoff
-    s = s_raw .- cutoff
+    s = s_raw .- cutoff  # center at 0
     n = n_obs(data)
     n_rep = m.n_rep
 
-    h = isnan(m.h) ? _rot_bandwidth(s_raw, cutoff) : m.h
-    m.h_used = h
-    w0 = _kernel_w(s ./ h, m.kernel)
+    Z, ZL, ZR, z_int = _fs_design(s, m.fs_specification)
+    d = m.fuzzy ? data.d : z_int
 
-    # intended treatment (sharp assignment)
-    z = Float64.(s .>= 0)
-    d = m.fuzzy ? data.d : z
+    h_fs = isnan(m.h_fs) ? _rot_bandwidth(s_raw, cutoff) : m.h_fs
+    fixed_h = !isnan(m.h)
 
     if isempty(m.smpls)
         m.smpls = make_repeated_folds(n, m.n_folds, n_rep; rng=m.rng)
@@ -134,73 +219,52 @@ function fit!(m::DoubleMLRDD; store_predictions::Bool=true)
 
     all_coef = zeros(1, n_rep)
     all_se = zeros(1, n_rep)
+    all_h = fill(NaN, n_rep)
     psi_arr = fill(NaN, n, n_rep, 1)
     psi_d_arr = fill(NaN, n, n_rep, 1)
+    My_store = fill(NaN, n, n_rep)
 
     for r in 1:n_rep
         folds = m.smpls[r]
-        # residualize Y: η_Y ≈ (g+ + g-)/2 estimated by ML on each side with kernel weights
-        # practical: fit g on left and right with features X, average predictions
-        left = s .< 0
-        right = s .>= 0
-        gL = fill(NaN, n); gR = fill(NaN, n)
-        for (train, test) in folds
-            trL = train[left[train] .& (w0[train] .> 0)]
-            trR = train[right[train] .& (w0[train] .> 0)]
-            if length(trL) >= 5
-                mL = clone(m.ml_g); fit!(mL, X[trL, :], y[trL])
-                gL[test] = predict(mL, X[test, :])
-            end
-            if length(trR) >= 5
-                mR = clone(m.ml_g); fit!(mR, X[trR, :], y[trR])
-                gR[test] = predict(mR, X[test, :])
-            end
-        end
-        # fill missing side with other side
-        for i in 1:n
-            if !isfinite(gL[i]); gL[i] = isfinite(gR[i]) ? gR[i] : 0.0; end
-            if !isfinite(gR[i]); gR[i] = isfinite(gL[i]) ? gL[i] : 0.0; end
-        end
-        ηY = 0.5 .* (gL .+ gR)
-        My = y .- ηY
+        h_cur = h_fs
+        weights = _kernel_w(s ./ h_cur, m.fs_kernel)
+        My = similar(y)
+        Md = similar(d)
 
+        for it in 1:m.n_iterations
+            weights = _kernel_w(s ./ h_cur, m.fs_kernel)
+            ηY = _fit_nuisance_rdd(m.ml_g, y, X, Z, ZL, ZR, weights, folds; classifier=false)
+            My = y .- ηY
+            if m.fuzzy
+                ηD = _fit_nuisance_rdd(m.ml_m, d, X, Z, ZL, ZR, weights, folds;
+                                       classifier=is_classifier(m.ml_m))
+                Md = d .- ηD
+            end
+
+            if it < m.n_iterations && !fixed_h
+                h_cur = _bandwidth_from_residuals(s, My; h_hint=h_cur)
+            end
+        end
+
+        # final local linear on residualized outcomes with final bandwidth
+        h_final = fixed_h ? m.h : h_cur
+        w_final = _kernel_w(s ./ h_final, m.fs_kernel)
         if m.fuzzy
-            mL = fill(NaN, n); mR = fill(NaN, n)
-            for (train, test) in folds
-                trL = train[left[train] .& (w0[train] .> 0)]
-                trR = train[right[train] .& (w0[train] .> 0)]
-                if length(trL) >= 5
-                    mm = clone(m.ml_m); fit!(mm, X[trL, :], d[trL])
-                    mL[test] = is_classifier(mm) ? predict_proba(mm, X[test, :]) : predict(mm, X[test, :])
-                end
-                if length(trR) >= 5
-                    mm = clone(m.ml_m); fit!(mm, X[trR, :], d[trR])
-                    mR[test] = is_classifier(mm) ? predict_proba(mm, X[test, :]) : predict(mm, X[test, :])
-                end
-            end
-            for i in 1:n
-                if !isfinite(mL[i]); mL[i] = isfinite(mR[i]) ? mR[i] : 0.0; end
-                if !isfinite(mR[i]); mR[i] = isfinite(mL[i]) ? mL[i] : 0.0; end
-            end
-            ηD = 0.5 .* (mL .+ mR)
-            Md = d .- ηD
-            # fuzzy: local linear 2SLS — residualize, then IV of My on Md with instrument z
-            # reduced form + first stage local linear
-            rf, se_rf, _ = _local_linear_rd(s, My, z, w0)
-            fs, se_fs, _ = _local_linear_rd(s, Md, z, w0)
+            rf, se_rf, _ = _local_linear_rd(s, My, z_int, w_final)
+            fs, se_fs, _ = _local_linear_rd(s, Md, z_int, w_final)
             abs(fs) < 1e-8 && error("Weak first stage in fuzzy RDD")
             θ = rf / fs
-            # delta method se
-            se = abs(θ) * sqrt((se_rf / rf)^2 + (se_fs / fs)^2)
+            se = abs(θ) * sqrt((se_rf / max(abs(rf), 1e-12))^2 + (se_fs / fs)^2)
             resid = My .- θ .* Md
         else
-            θ, se, resid = _local_linear_rd(s, My, z, w0)
+            θ, se, resid = _local_linear_rd(s, My, z_int, w_final)
         end
 
         all_coef[1, r] = θ
         all_se[1, r] = se
-        # influence approx for bootstrap
-        ψ = w0 .* resid
+        all_h[r] = h_final
+        My_store[:, r] = My
+        ψ = w_final .* resid
         psi_arr[:, r, 1] = ψ .- mean(ψ)
         psi_d_arr[:, r, 1] .= -1.0
     end
@@ -209,7 +273,12 @@ function fit!(m::DoubleMLRDD; store_predictions::Bool=true)
     m.coef = coef; m.se = se
     m.all_coef = all_coef; m.all_se = all_se
     m.psi = psi_arr; m.psi_deriv = psi_d_arr
+    m.all_h = all_h
+    m.h_used = median(all_h)
     m.boot = nothing
+    if store_predictions
+        m.predictions = Dict("M_Y" => My_store)
+    end
     m.fitted = true
     return m
 end

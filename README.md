@@ -112,7 +112,8 @@ model.confint()                →    confint(model)
 | **DID multi (CS)** | Callaway–Sant’Anna: never/not-yet, anticipation, aggregate group/time/eventstudy, unit-IF joint SE, bootstrap, `p_adjust` | ✅ |
 | **DIDCS** | Repeated cross-section two-period DiD (`observational` / `experimental`) | ✅ |
 | **LPLR** | Logistic partially linear (binary Y) | ✅ |
-| **PLPR** | Partially linear panel regression (`fd_exact` first-difference) | ✅ |
+| **PLPR** | Panel PLR: `fd_exact` / `wg_approx` / `cre_general` / `cre_normal` | ✅ |
+| **RDFlex / RDD** | Iterative bandwidth, `fs_specification`, sharp/fuzzy local linear | ✅ |
 | **SSM** | Sample selection (`missing-at-random` / basic `nonignorable`) | ✅ |
 | **RDD** | Sharp/fuzzy RD with ML residualization + local linear | ✅ |
 | **Cluster SE** | One-way post-hoc + **cluster-in-fit** (1/2-way) for PLR/IRM | ✅ |
@@ -334,10 +335,16 @@ rcs = make_did_cs_data(n_obs=1000, theta=-2.0; seed=2)
 didcs = DoubleMLDIDCS(rcs, RidgeLearner(α=0.5), clf_m; score="observational")
 fit!(didcs)
 
-# Panel PLR (first-difference exact)
+# Panel PLR — fd_exact | wg_approx | cre_general | cre_normal
 panel_plpr = make_plpr_data(n_id=200, n_t=4, theta=0.5; seed=3)
-plpr = DoubleMLPLPR(panel_plpr, RidgeLearner(α=0.5), RidgeLearner(α=0.5))
+plpr = DoubleMLPLPR(panel_plpr, RidgeLearner(α=0.5), RidgeLearner(α=0.5);
+                    approach="cre_general")  # or fd_exact / wg_approx / cre_normal
 fit!(plpr)
+
+# RDFlex (alias of DoubleMLRDD): iterative bandwidth + fs_specification
+rdd = RDFlex(make_rdd_data(n_obs=2000, tau=1.0; seed=6), RidgeLearner(α=0.5);
+             n_iterations=2, fs_specification="cutoff and score")
+fit!(rdd)
 
 # Cluster-robust SE (any fitted model with psi stored)
 cluster = rand(1:50, length(data.y))

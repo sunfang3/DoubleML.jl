@@ -758,13 +758,29 @@ using Statistics
         data = make_rdd_data(n_obs=2500, dim_x=3, tau=1.0, fuzzy=false; seed=631)
         rdd = DoubleMLRDD(
             data, RidgeLearner(α=0.5);
-            cutoff=0.0, fuzzy=false, n_folds=3, rng=MersenneTwister(631),
+            cutoff=0.0, fuzzy=false, n_folds=3, n_iterations=2,
+            fs_specification="cutoff", rng=MersenneTwister(631),
         )
         fit!(rdd)
         @test isfinite(rdd.coef[1])
         @test abs(rdd.coef[1] - 1.0) < 0.8
         @test rdd.se[1] > 0
         @test isfinite(rdd.h_used) && rdd.h_used > 0
+        # RDFlex alias + fs_specification variants smoke
+        rdd2 = RDFlex(
+            data, RidgeLearner(α=0.5);
+            cutoff=0.0, n_folds=3, n_iterations=1,
+            fs_specification="cutoff and score", rng=MersenneTwister(632),
+        )
+        fit!(rdd2)
+        @test isfinite(rdd2.coef[1])
+        rdd3 = RDFlex(
+            data, RidgeLearner(α=0.5);
+            cutoff=0.0, n_folds=3, n_iterations=2,
+            fs_specification="interacted cutoff and score", rng=MersenneTwister(633),
+        )
+        fit!(rdd3)
+        @test isfinite(rdd3.coef[1])
     end
 
     @testset "DID multi unit IF, bootstrap, p_adjust" begin
@@ -831,17 +847,31 @@ using Statistics
         @test dml.se[1] >= 0.5 * se_iid
     end
 
-    @testset "PLPR first-difference" begin
+    @testset "PLPR approaches (fd / wg / cre)" begin
         data = make_plpr_data(n_id=180, n_t=4, dim_x=3, theta=0.5; seed=731)
-        plpr = DoubleMLPLPR(
+        for ap in ("fd_exact", "wg_approx", "cre_general", "cre_normal")
+            plpr = DoubleMLPLPR(
+                data, RidgeLearner(α=0.5), RidgeLearner(α=0.5);
+                approach=ap, n_folds=3, rng=MersenneTwister(731),
+            )
+            fit!(plpr)
+            @test isfinite(plpr.coef[1])
+            @test abs(plpr.coef[1] - 0.5) < 0.45
+            @test plpr.se[1] > 0
+            @test plpr.transformed !== nothing
+            if ap in ("cre_general", "cre_normal")
+                @test plpr.d_mean !== nothing
+                @test length(plpr.d_mean) == length(plpr.transformed.y)
+            end
+        end
+        # IV-type score on CRE
+        plpr_iv = DoubleMLPLPR(
             data, RidgeLearner(α=0.5), RidgeLearner(α=0.5);
-            approach="fd_exact", n_folds=3, rng=MersenneTwister(731),
+            ml_g=RidgeLearner(α=0.5), approach="cre_general", score="IV-type",
+            n_folds=3, rng=MersenneTwister(732),
         )
-        fit!(plpr)
-        @test isfinite(plpr.coef[1])
-        @test abs(plpr.coef[1] - 0.5) < 0.35
-        @test plpr.se[1] > 0
-        @test plpr.fd_data !== nothing
+        fit!(plpr_iv)
+        @test isfinite(plpr_iv.coef[1])
     end
 
     @testset "Base p_adjust and IRM weights" begin

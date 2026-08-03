@@ -23,6 +23,28 @@ def fmt(x, nd=6):
     return str(x)
 
 
+def is_bookkeeping(entry: dict) -> bool:
+    if entry.get("exclude_from_runtime_total"):
+        return True
+    proto = entry.get("seconds_protocol")
+    return proto == "bookkeeping"
+
+
+def timed_seconds(entry: dict):
+    """Warm seconds (primary gate metric)."""
+    s = entry.get("seconds")
+    if isinstance(s, (int, float)) and not is_bookkeeping(entry):
+        return float(s)
+    return None
+
+
+def cold_seconds(entry: dict):
+    s = entry.get("seconds_cold")
+    if isinstance(s, (int, float)) and not is_bookkeeping(entry):
+        return float(s)
+    return None
+
+
 def main():
     py = load(OUT / "benchmark_py.json")
     jl = load(OUT / "benchmark_jl.json")
@@ -30,7 +52,7 @@ def main():
     jl_m = jl["models"]
 
     keys = sorted(set(py_m) | set(jl_m), key=lambda k: (
-        0 if k.startswith("PLR") and "multi" not in k and "Framework" not in k else
+        0 if k.startswith("PLR") and "multi" not in k and "Framework" not in k and "sensitivity" not in k else
         1 if k == "IRM" else
         2 if k == "PLIV" else
         3 if k == "IIVM" else
@@ -44,15 +66,20 @@ def main():
 
     rows = []
     lines = []
-    lines.append("# Algorithm Benchmark: Python DoubleML vs Julia DoubleML.jl\n")
+    proto = py.get("timing_protocol") or jl.get("timing_protocol") or "single"
+    n_warm = py.get("n_warm_reps") or jl.get("n_warm_reps") or 1
+    n_cold = py.get("n_cold_discard") or jl.get("n_cold_discard") or 0
+    lines.append("# Algorithm Benchmark: Python DoubleML vs Julia DoubleML.jl\n\n")
     lines.append(f"- **Python**: DoubleML `{py.get('doubleml')}`\n")
     lines.append(f"- **Julia**: DoubleML.jl `{jl.get('doubleml')}`\n")
     lines.append(f"- **Protocol**: shared CSV + shared K-fold (where applicable); OLS / near-unregularized logistic; `n_rep=1`\n")
-    lines.append(f"- **Seed**: {py.get('seed')}, default `n_folds={py.get('n_folds')}`\n\n")
+    lines.append(f"- **Timing protocol**: `{proto}` (discard {n_cold} cold fit; median of {n_warm} warm fits). `seconds` = warm median.\n")
+    lines.append(f"- **Seed**: {py.get('seed')}, default `n_folds={py.get('n_folds')}`\n")
+    lines.append(f"- **Runtime gate**: `(t_jl − t_py) / t_py ≤ 0.30` on **sum of warm** seconds over timed main models (bookkeeping rows excluded).\n\n")
 
     lines.append("## Coefficient & SE comparison\n\n")
-    lines.append("| Model | j | Py coef | Jl coef | |Δcoef| | Py SE | Jl SE | |ΔSE| | rel Δcoef | Py s | Jl s | speedup |\n")
-    lines.append("|-------|---|--------:|--------:|--------:|------:|------:|------:|----------:|-----:|-----:|--------:|\n")
+    lines.append("| Model | j | Py coef | Jl coef | |Δcoef| | Py SE | Jl SE | |ΔSE| | rel Δcoef | Py warm s | Jl warm s | speedup |\n")
+    lines.append("|-------|---|--------:|--------:|--------:|------:|------:|------:|----------:|----------:|----------:|--------:|\n")
 
     for key in keys:
         p = py_m.get(key, {})
@@ -74,7 +101,7 @@ def main():
         n = max(len(pc), len(jc))
         py_t = p.get("seconds")
         jl_t = j.get("seconds")
-        speed = (py_t / jl_t) if (py_t and jl_t and jl_t > 0) else None
+        speed = (py_t / jl_t) if (isinstance(py_t, (int, float)) and isinstance(jl_t, (int, float)) and jl_t > 0) else None
 
         for i in range(n):
             pci = pc[i] if i < len(pc) else None
@@ -117,7 +144,7 @@ def main():
     main_rows = [r for r in rows if r[0] != "DID_multi"]
     rels = [r[3] for r in main_rows if r[3] is not None]
     dcoefs = [r[2] for r in main_rows if r[2] is not None]
-    lines.append("\n## Summary\n\n")
+    lines.append("\n## Summary (accuracy)\n\n")
     if rels:
         lines.append(f"- Median relative |Δcoef| (excl. DID multi): **{sorted(rels)[len(rels)//2]:.2e}**\n")
         lines.append(f"- Max relative |Δcoef| (excl. DID multi): **{max(rels):.2e}**\n")
@@ -133,12 +160,40 @@ def main():
                 f"- DID multi: n_ATT={len(pc)}, median cell rel={np.median(dm_rel):.2e}, "
                 f"frac ≤30%={(dm_rel <= 0.30).mean():.0%}\n"
             )
-    # timing totals
-    py_tot = sum(py_m[k].get("seconds") or 0 for k in py_m if isinstance(py_m[k].get("seconds"), (int, float)))
-    jl_tot = sum(jl_m[k].get("seconds") or 0 for k in jl_m if isinstance(jl_m[k].get("seconds"), (int, float)))
-    lines.append(f"- Total timed fit seconds — Python: **{py_tot:.3f}s**, Julia: **{jl_tot:.3f}s**\n")
-    if jl_tot > 0:
-        lines.append(f"- Overall speedup (Py/Jl total): **{py_tot/jl_tot:.2f}×**\n")
+
+    # Warm / cold timing totals (gating metric = warm sum over timed models)
+    timed_keys = sorted(
+        k for k in set(py_m) | set(jl_m)
+        if timed_seconds(py_m.get(k, {})) is not None or timed_seconds(jl_m.get(k, {})) is not None
+    )
+    py_warm = sum(timed_seconds(py_m[k]) or 0.0 for k in timed_keys if k in py_m)
+    jl_warm = sum(timed_seconds(jl_m[k]) or 0.0 for k in timed_keys if k in jl_m)
+    py_cold = sum(cold_seconds(py_m[k]) or 0.0 for k in timed_keys if k in py_m)
+    jl_cold = sum(cold_seconds(jl_m[k]) or 0.0 for k in timed_keys if k in jl_m)
+    gap = (jl_warm - py_warm) / py_warm if py_warm > 0 else float("inf")
+    runtime_pass = bool(py_warm > 0 and gap <= 0.30)
+
+    lines.append("\n## Runtime (warm multi-rep gate)\n\n")
+    lines.append("| Aggregate | Python | Julia |\n")
+    lines.append("|-----------|-------:|------:|\n")
+    lines.append(f"| **Warm total** (gating) | **{py_warm:.4f}s** | **{jl_warm:.4f}s** |\n")
+    lines.append(f"| Cold total (discarded) | {py_cold:.4f}s | {jl_cold:.4f}s |\n")
+    lines.append(f"| Ratio t_jl / t_py (warm) | — | **{jl_warm/py_warm:.3f}×** |\n" if py_warm > 0 else "| Ratio | — | — |\n")
+    lines.append(f"| Relative gap (t_jl − t_py)/t_py | — | **{gap:.2%}** |\n")
+    lines.append(f"| Gate (≤ 30%) | — | **{'PASS' if runtime_pass else 'FAIL'}** |\n\n")
+    lines.append(f"**RUNTIME_GAP_PASS: {str(runtime_pass).lower()}**\n\n")
+    lines.append("Per-model warm seconds:\n\n")
+    lines.append("| Model | Py warm | Jl warm | Py cold | Jl cold | Jl/Py |\n")
+    lines.append("|-------|--------:|--------:|--------:|--------:|------:|\n")
+    for k in timed_keys:
+        pw = timed_seconds(py_m.get(k, {}))
+        jw = timed_seconds(jl_m.get(k, {}))
+        pc_ = cold_seconds(py_m.get(k, {}))
+        jc_ = cold_seconds(jl_m.get(k, {}))
+        ratio = (jw / pw) if (pw and jw and pw > 0) else None
+        lines.append(
+            f"| {k} | {fmt(pw, 4)} | {fmt(jw, 4)} | {fmt(pc_, 4)} | {fmt(jc_, 4)} | {fmt(ratio, 2)} |\n"
+        )
 
     # sensitivity special section
     if "PLR_sensitivity" in py_m and "PLR_sensitivity" in jl_m:
@@ -159,7 +214,8 @@ def main():
     lines.append("- **SSM nonignorable**: nested half-splits use stratified shuffle; Julia RNG ≠ sklearn `random_state=42` unless aligned — expect larger gaps than MAR.\n")
     lines.append("- **RDFlex**: Python uses `rdrobust` final stage; Julia uses weighted local linear + residual ROT — coef may differ more than linear DML.\n")
     lines.append("- **DID multi**: never-treated coding (0 vs +inf) and CS internals may differ per-cell ATTs.\n")
-    lines.append("- Timings are single-run wall clock; Julia first fits include JIT compile cost.\n")
+    lines.append("- **Timing**: `seconds` is the **median of warm fits** after discarding cold/JIT. Cold is reported separately and is **not** the 30% gate.\n")
+    lines.append("- Framework / sensitivity rows are bookkeeping (re-use fit; excluded from runtime total).\n")
 
     lines.append("\n## Reproduce\n\n```bash\n")
     lines.append("python3 benchmarks/compare_py_jl/run_benchmark_python.py\n")
@@ -167,9 +223,11 @@ def main():
     lines.append("python3 benchmarks/compare_py_jl/compare_benchmark.py\n")
     lines.append("```\n")
 
-    REP.write_text("".join(lines))
-    print("".join(lines))
+    text = "".join(lines)
+    REP.write_text(text)
+    print(text)
     print("wrote", REP)
+    print(f"RUNTIME_GAP_PASS: {str(runtime_pass).lower()}  t_py={py_warm:.4f} t_jl={jl_warm:.4f} gap={gap:.2%}")
 
 
 if __name__ == "__main__":

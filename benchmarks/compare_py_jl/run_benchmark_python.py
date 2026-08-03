@@ -24,6 +24,9 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 SEED = 3141
 N_FOLDS = 5
+# Warm multi-rep timing: 1 cold discard + median of N_WARM_REPS timed fits.
+N_WARM_REPS = 3
+N_COLD_DISCARD = 1
 
 
 def ols():
@@ -44,12 +47,37 @@ def save_smpls(path: Path, smpls):
 
 
 def timed(fn):
+    """Single-shot wall clock (legacy helper)."""
     t0 = time.perf_counter()
     obj = fn()
     return obj, time.perf_counter() - t0
 
 
-def pack(est, seconds: float, theta_true=None, extra=None):
+def timed_warm(fn, n_warm: int = N_WARM_REPS, n_cold: int = N_COLD_DISCARD):
+    """Discard cold fit(s); return last object + median of warm reps + timing fields."""
+    cold_secs = []
+    obj = None
+    for _ in range(n_cold):
+        t0 = time.perf_counter()
+        obj = fn()
+        cold_secs.append(time.perf_counter() - t0)
+    warm_secs = []
+    for _ in range(n_warm):
+        t0 = time.perf_counter()
+        obj = fn()
+        warm_secs.append(time.perf_counter() - t0)
+    sec = float(np.median(warm_secs))
+    meta = {
+        "seconds_cold": float(cold_secs[0]) if cold_secs else None,
+        "seconds_reps": [float(x) for x in warm_secs],
+        "seconds_protocol": "warm_median",
+        "n_warm_reps": int(n_warm),
+        "n_cold_discard": int(n_cold),
+    }
+    return obj, sec, meta
+
+
+def pack(est, seconds: float, theta_true=None, extra=None, timing=None):
     d = {
         "coef": np.asarray(est.coef, dtype=float).reshape(-1).tolist(),
         "se": np.asarray(est.se, dtype=float).reshape(-1).tolist(),
@@ -58,6 +86,8 @@ def pack(est, seconds: float, theta_true=None, extra=None):
     }
     if theta_true is not None:
         d["theta_true"] = theta_true if isinstance(theta_true, list) else float(theta_true)
+    if timing:
+        d.update(timing)
     if extra:
         d.update(extra)
     return d
@@ -69,6 +99,9 @@ def main():
         "doubleml": dml.__version__,
         "seed": SEED,
         "n_folds": N_FOLDS,
+        "timing_protocol": "warm_median",
+        "n_warm_reps": N_WARM_REPS,
+        "n_cold_discard": N_COLD_DISCARD,
         "models": {},
     }
 
@@ -86,15 +119,19 @@ def main():
         m.fit()
         return m
 
-    est, sec = timed(fit_plr)
-    results["models"]["PLR"] = pack(est, sec, 0.5)
+    est, sec, tmeta = timed_warm(fit_plr)
+    results["models"]["PLR"] = pack(est, sec, 0.5, timing=tmeta)
     fw = est.construct_framework()
     results["models"]["Framework_2x_PLR"] = {
         "coef": (2 * fw).thetas.tolist(),
         "se": (2 * fw).ses.tolist(),
         "seconds": 0.0,
+        "seconds_cold": 0.0,
+        "seconds_reps": [],
+        "seconds_protocol": "bookkeeping",
         "theta_true": 1.0,
         "note": "2 * construct_framework(PLR)",
+        "exclude_from_runtime_total": True,
     }
     # sensitivity on same PLR fit
     est.sensitivity_analysis(cf_y=0.04, cf_d=0.03, rho=1.0, level=0.95, null_hypothesis=0.0)
@@ -109,9 +146,13 @@ def main():
         "rv": np.asarray(sp["rv"]).reshape(-1).tolist(),
         "rva": np.asarray(sp["rva"]).reshape(-1).tolist(),
         "seconds": 0.0,
+        "seconds_cold": 0.0,
+        "seconds_reps": [],
+        "seconds_protocol": "bookkeeping",
         "cf_y": 0.04,
         "cf_d": 0.03,
         "rho": 1.0,
+        "exclude_from_runtime_total": True,
     }
 
     # ---- IRM ----
@@ -130,8 +171,8 @@ def main():
         m.fit()
         return m
 
-    est, sec = timed(fit_irm)
-    results["models"]["IRM"] = pack(est, sec, 0.5)
+    est, sec, tmeta = timed_warm(fit_irm)
+    results["models"]["IRM"] = pack(est, sec, 0.5, timing=tmeta)
 
     # ---- PLIV ----
     np.random.seed(SEED + 2)
@@ -148,8 +189,8 @@ def main():
         m.fit()
         return m
 
-    est, sec = timed(fit_pliv)
-    results["models"]["PLIV"] = pack(est, sec, 1.0)
+    est, sec, tmeta = timed_warm(fit_pliv)
+    results["models"]["PLIV"] = pack(est, sec, 1.0, timing=tmeta)
 
     # ---- IIVM ----
     np.random.seed(SEED + 3)
@@ -168,8 +209,8 @@ def main():
         m.fit()
         return m
 
-    est, sec = timed(fit_iivm)
-    results["models"]["IIVM"] = pack(est, sec, 0.5)
+    est, sec, tmeta = timed_warm(fit_iivm)
+    results["models"]["IIVM"] = pack(est, sec, 0.5, timing=tmeta)
 
     # ---- multi-treatment PLR ----
     np.random.seed(SEED + 4)
@@ -194,8 +235,8 @@ def main():
         m.fit()
         return m
 
-    est, sec = timed(fit_multi)
-    results["models"]["PLR_multi"] = pack(est, sec, theta.tolist())
+    est, sec, tmeta = timed_warm(fit_multi)
+    results["models"]["PLR_multi"] = pack(est, sec, theta.tolist(), timing=tmeta)
 
     # ---- PLPR all approaches ----
     np.random.seed(SEED + 5)
@@ -208,8 +249,8 @@ def main():
             m.fit()
             return m
 
-        est, sec = timed(fit_plpr)
-        results["models"][f"PLPR_{approach}"] = pack(est, sec, 0.5, {"n_folds": 3})
+        est, sec, tmeta = timed_warm(fit_plpr)
+        results["models"][f"PLPR_{approach}"] = pack(est, sec, 0.5, {"n_folds": 3}, timing=tmeta)
 
     # ---- DID two-period ----
     np.random.seed(SEED + 6)
@@ -232,8 +273,8 @@ def main():
         return m
 
     try:
-        est, sec = timed(fit_did)
-        results["models"]["DID"] = pack(est, sec)
+        est, sec, tmeta = timed_warm(fit_did)
+        results["models"]["DID"] = pack(est, sec, timing=tmeta)
     except Exception as e:
         results["models"]["DID"] = {"error": str(e), "seconds": None}
 
@@ -266,9 +307,11 @@ def main():
             m.fit()
             return m
 
-        est, sec = timed(fit_didm)
+        est, sec, tmeta = timed_warm(fit_didm)
         results["models"]["DID_multi"] = pack(
-            est, sec, extra={"n_att": int(np.size(est.coef)), "coef_mean": float(np.mean(est.coef))}
+            est, sec,
+            extra={"n_att": int(np.size(est.coef)), "coef_mean": float(np.mean(est.coef))},
+            timing=tmeta,
         )
     except Exception as e:
         results["models"]["DID_multi"] = {"error": str(e), "seconds": None}
@@ -289,7 +332,7 @@ def main():
             m.fit(n_iterations=2)
             return m
 
-        est, sec = timed(fit_rdd)
+        est, sec, tmeta = timed_warm(fit_rdd)
         # rdrobust returns Conventional / Bias-Corrected / Robust — keep Conventional only for parity
         coef = np.asarray(est.coef, dtype=float).reshape(-1)
         se = np.asarray(est.se, dtype=float).reshape(-1)
@@ -300,6 +343,7 @@ def main():
             "n_coef": 1,
             "n_iterations": 2,
             "note": "Python Conventional estimate (rdrobust)",
+            **tmeta,
         }
     except Exception as e:
         results["models"]["RDFlex"] = {"error": str(e), "seconds": None}
@@ -323,8 +367,8 @@ def main():
             m.fit()
             return m
 
-        est, sec = timed(fit_ssm_mar)
-        results["models"]["SSM_MAR"] = pack(est, sec, 1.0)
+        est, sec, tmeta = timed_warm(fit_ssm_mar)
+        results["models"]["SSM_MAR"] = pack(est, sec, 1.0, timing=tmeta)
     except Exception as e:
         results["models"]["SSM_MAR"] = {"error": str(e), "seconds": None}
 
@@ -348,8 +392,8 @@ def main():
             m.fit()
             return m
 
-        est, sec = timed(fit_ssm_ni)
-        results["models"]["SSM_nonignorable"] = pack(est, sec, 1.0)
+        est, sec, tmeta = timed_warm(fit_ssm_ni)
+        results["models"]["SSM_nonignorable"] = pack(est, sec, 1.0, timing=tmeta)
     except Exception as e:
         results["models"]["SSM_nonignorable"] = {"error": str(e), "seconds": None}
 

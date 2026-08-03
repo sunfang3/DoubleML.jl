@@ -18,6 +18,9 @@ using LinearAlgebra
 
 const OUT = joinpath(@__DIR__, "data")
 const N_FOLDS = 5
+# Warm multi-rep timing: 1 cold discard + median of N_WARM_REPS timed fits.
+const N_WARM_REPS = 3
+const N_COLD_DISCARD = 1
 
 ols() = LinearRegressionLearner()
 logit() = LogisticRegressionLearner(α=1e-6, max_iter=200)
@@ -28,7 +31,7 @@ function load_smpls(path)
     return [folds]
 end
 
-function pack(m, seconds; theta_true=nothing, extra=Dict())
+function pack(m, seconds; theta_true=nothing, extra=Dict(), timing=Dict{String,Any}())
     d = Dict{String,Any}(
         "coef" => collect(Float64, m.coef),
         "se" => collect(Float64, m.se),
@@ -36,6 +39,7 @@ function pack(m, seconds; theta_true=nothing, extra=Dict())
         "n_coef" => length(m.coef),
     )
     theta_true !== nothing && (d["theta_true"] = theta_true)
+    merge!(d, timing)
     merge!(d, extra)
     return d
 end
@@ -46,12 +50,41 @@ function timed(f)
     return m, time() - t0
 end
 
+"""Discard cold fit(s); return last object, median of warm reps, and timing metadata."""
+function timed_warm(f; n_warm::Int=N_WARM_REPS, n_cold::Int=N_COLD_DISCARD)
+    cold_secs = Float64[]
+    m = nothing
+    for _ in 1:n_cold
+        t0 = time()
+        m = f()
+        push!(cold_secs, time() - t0)
+    end
+    warm_secs = Float64[]
+    for _ in 1:n_warm
+        t0 = time()
+        m = f()
+        push!(warm_secs, time() - t0)
+    end
+    sec = median(warm_secs)
+    meta = Dict{String,Any}(
+        "seconds_cold" => isempty(cold_secs) ? nothing : cold_secs[1],
+        "seconds_reps" => warm_secs,
+        "seconds_protocol" => "warm_median",
+        "n_warm_reps" => n_warm,
+        "n_cold_discard" => n_cold,
+    )
+    return m, sec, meta
+end
+
 function main()
     results = Dict{String,Any}(
         "backend" => "julia",
         "doubleml" => "1.4.0",
         "seed" => 3141,
         "n_folds" => N_FOLDS,
+        "timing_protocol" => "warm_median",
+        "n_warm_reps" => N_WARM_REPS,
+        "n_cold_discard" => N_COLD_DISCARD,
         "models" => Dict{String,Any}(),
     )
     models = results["models"]
@@ -60,20 +93,24 @@ function main()
     df = CSV.read(joinpath(OUT, "bench_plr.csv"), DataFrame)
     data = DoubleMLData(df; y_col="y", d_cols="d")
     smpls = load_smpls(joinpath(OUT, "bench_plr_smpls.json"))
-    m, sec = timed() do
+    m, sec, tmeta = timed_warm() do
         plr = DoubleMLPLR(data, ols(), ols(); n_folds=N_FOLDS, n_rep=1, draw_sample_splitting=false)
         set_sample_splitting!(plr, smpls)
         fit!(plr)
         plr
     end
-    models["PLR"] = pack(m, sec; theta_true=0.5)
+    models["PLR"] = pack(m, sec; theta_true=0.5, timing=tmeta)
     f = construct_framework(m)
     f2 = 2 * f
     models["Framework_2x_PLR"] = Dict(
         "coef" => collect(f2.thetas),
         "se" => collect(f2.ses),
         "seconds" => 0.0,
+        "seconds_cold" => 0.0,
+        "seconds_reps" => Float64[],
+        "seconds_protocol" => "bookkeeping",
         "theta_true" => 1.0,
+        "exclude_from_runtime_total" => true,
     )
     sensitivity_analysis!(m; cf_y=0.04, cf_d=0.03, rho=1.0, level=0.95, null_hypothesis=0.0)
     r = m.sensitivity
@@ -87,30 +124,34 @@ function main()
         "rv" => collect(r.rv),
         "rva" => collect(r.rva),
         "seconds" => 0.0,
+        "seconds_cold" => 0.0,
+        "seconds_reps" => Float64[],
+        "seconds_protocol" => "bookkeeping",
         "cf_y" => 0.04,
         "cf_d" => 0.03,
         "rho" => 1.0,
+        "exclude_from_runtime_total" => true,
     )
 
     # IRM
     df = CSV.read(joinpath(OUT, "bench_irm.csv"), DataFrame)
     data = DoubleMLData(df; y_col="y", d_cols="d")
     smpls = load_smpls(joinpath(OUT, "bench_irm_smpls.json"))
-    m, sec = timed() do
+    m, sec, tmeta = timed_warm() do
         irm = DoubleMLIRM(data, ols(), logit(); n_folds=N_FOLDS, n_rep=1,
                           draw_sample_splitting=false, trimming_threshold=0.01)
         set_sample_splitting!(irm, smpls)
         fit!(irm)
         irm
     end
-    models["IRM"] = pack(m, sec; theta_true=0.5)
+    models["IRM"] = pack(m, sec; theta_true=0.5, timing=tmeta)
 
     # PLIV
     df = CSV.read(joinpath(OUT, "bench_pliv.csv"), DataFrame)
     zcols = [c for c in names(df) if startswith(String(c), "Z")]
     data = DoubleMLData(df; y_col="y", d_cols="d", z_cols=zcols)
     smpls = load_smpls(joinpath(OUT, "bench_pliv_smpls.json"))
-    m, sec = timed() do
+    m, sec, tmeta = timed_warm() do
         ml = ols()
         pliv = DoubleMLPLIV(data, clone(ml), clone(ml), clone(ml);
                             n_folds=N_FOLDS, n_rep=1, draw_sample_splitting=false)
@@ -118,33 +159,33 @@ function main()
         fit!(pliv)
         pliv
     end
-    models["PLIV"] = pack(m, sec; theta_true=1.0)
+    models["PLIV"] = pack(m, sec; theta_true=1.0, timing=tmeta)
 
     # IIVM
     df = CSV.read(joinpath(OUT, "bench_iivm.csv"), DataFrame)
     zcols = [c for c in names(df) if startswith(lowercase(String(c)), "z")]
     data = DoubleMLData(df; y_col="y", d_cols="d", z_cols=zcols)
     smpls = load_smpls(joinpath(OUT, "bench_iivm_smpls.json"))
-    m, sec = timed() do
+    m, sec, tmeta = timed_warm() do
         iivm = DoubleMLIIVM(data, ols(), logit(), logit(); n_folds=N_FOLDS, n_rep=1,
                             draw_sample_splitting=false, trimming_threshold=0.05)
         set_sample_splitting!(iivm, smpls)
         fit!(iivm)
         iivm
     end
-    models["IIVM"] = pack(m, sec; theta_true=0.5)
+    models["IIVM"] = pack(m, sec; theta_true=0.5, timing=tmeta)
 
     # multi PLR
     df = CSV.read(joinpath(OUT, "bench_plr_multi.csv"), DataFrame)
     data = DoubleMLData(df; y_col="y", d_cols=["d1", "d2"])
     smpls = load_smpls(joinpath(OUT, "bench_plr_multi_smpls.json"))
-    m, sec = timed() do
+    m, sec, tmeta = timed_warm() do
         plr = DoubleMLPLR(data, ols(), ols(); n_folds=N_FOLDS, n_rep=1, draw_sample_splitting=false)
         set_sample_splitting!(plr, smpls)
         fit!(plr)
         plr
     end
-    models["PLR_multi"] = pack(m, sec; theta_true=[0.5, -0.3])
+    models["PLR_multi"] = pack(m, sec; theta_true=[0.5, -0.3], timing=tmeta)
 
     # PLPR
     df = CSV.read(joinpath(OUT, "bench_plpr.csv"), DataFrame)
@@ -152,13 +193,13 @@ function main()
     xcols = [c for c in names(df) if startswith(lowercase(String(c)), "x")]
     data = DoubleMLData(df; y_col="y", d_cols="d", x_cols=xcols, id_col="id", t_col="time")
     for ap in ("fd_exact", "wg_approx", "cre_general", "cre_normal")
-        m, sec = timed() do
+        m, sec, tmeta = timed_warm() do
             plpr = DoubleMLPLPR(data, ols(), ols(); approach=ap, n_folds=3, n_rep=1,
                                 rng=MersenneTwister(3141 + 5))
             fit!(plpr)
             plpr
         end
-        models["PLPR_$ap"] = pack(m, sec; theta_true=0.5, extra=Dict("n_folds" => 3))
+        models["PLPR_$ap"] = pack(m, sec; theta_true=0.5, extra=Dict("n_folds" => 3), timing=tmeta)
     end
 
     # DID two-period
@@ -169,14 +210,14 @@ function main()
         end
         data = DoubleMLData(df; y_col="y", d_cols="d")
         smpls = load_smpls(joinpath(OUT, "bench_did_smpls.json"))
-        m, sec = timed() do
+        m, sec, tmeta = timed_warm() do
             did = DoubleMLDID(data, ols(), logit(); n_folds=N_FOLDS, n_rep=1,
                               draw_sample_splitting=false, score="observational")
             set_sample_splitting!(did, smpls)
             fit!(did)
             did
         end
-        models["DID"] = pack(m, sec)
+        models["DID"] = pack(m, sec; timing=tmeta)
     catch e
         models["DID"] = Dict("error" => string(e), "seconds" => nothing)
     end
@@ -196,7 +237,7 @@ function main()
         else
             error("missing bench_did_multi.csv")
         end
-        m, sec = timed() do
+        m, sec, tmeta = timed_warm() do
             multi = DoubleMLDIDMulti(data, ols(), logit(); n_folds=3,
                                      control_group="never_treated",
                                      gt_combinations=:standard,
@@ -204,31 +245,31 @@ function main()
             fit!(multi)
             multi
         end
-        models["DID_multi"] = pack(m, sec; extra=Dict("n_att" => length(m.coef)))
+        models["DID_multi"] = pack(m, sec; extra=Dict("n_att" => length(m.coef)), timing=tmeta)
     catch e
         # fallback synthetic comparable DGP
         data = make_did_panel_data(n_id=200, n_t=4, dim_x=3, theta=2.0; seed=3141 + 7)
-        m, sec = timed() do
+        m, sec, tmeta = timed_warm() do
             multi = DoubleMLDIDMulti(data, ols(), logit(); n_folds=3, rng=MersenneTwister(3141 + 7))
             fit!(multi)
             multi
         end
         models["DID_multi"] = pack(m, sec; extra=Dict("n_att" => length(m.coef),
-                                                      "note" => "julia fallback DGP: $(e)"))
+                                                      "note" => "julia fallback DGP: $(e)"), timing=tmeta)
     end
 
     # RDFlex
     try
         df = CSV.read(joinpath(OUT, "bench_rdd.csv"), DataFrame)
         data = DoubleMLData(df; y_col="y", d_cols="d", score_col="score")
-        m, sec = timed() do
+        m, sec, tmeta = timed_warm() do
             rdd = RDFlex(data, ols(); cutoff=0.0, fuzzy=false, n_folds=3, n_rep=1,
                          n_iterations=2, fs_specification="cutoff",
                          rng=MersenneTwister(3141 + 8))
             fit!(rdd)
             rdd
         end
-        models["RDFlex"] = pack(m, sec; extra=Dict("n_iterations" => 2, "h_used" => m.h_used))
+        models["RDFlex"] = pack(m, sec; extra=Dict("n_iterations" => 2, "h_used" => m.h_used), timing=tmeta)
     catch e
         models["RDFlex"] = Dict("error" => string(e), "seconds" => nothing)
     end
@@ -238,7 +279,7 @@ function main()
         df = CSV.read(joinpath(OUT, "bench_ssm_mar.csv"), DataFrame)
         data = DoubleMLData(df; y_col="y", d_cols="d", s_col="s")
         smpls = load_smpls(joinpath(OUT, "bench_ssm_mar_smpls.json"))
-        m, sec = timed() do
+        m, sec, tmeta = timed_warm() do
             ssm = DoubleMLSSM(data, ols(), logit(), logit(); n_folds=N_FOLDS, n_rep=1,
                               draw_sample_splitting=false, score="missing-at-random",
                               trimming_threshold=0.05)
@@ -246,7 +287,7 @@ function main()
             fit!(ssm)
             ssm
         end
-        models["SSM_MAR"] = pack(m, sec; theta_true=1.0)
+        models["SSM_MAR"] = pack(m, sec; theta_true=1.0, timing=tmeta)
     catch e
         models["SSM_MAR"] = Dict("error" => string(e), "seconds" => nothing)
     end
@@ -257,7 +298,7 @@ function main()
         zcols = [c for c in names(df) if startswith(lowercase(String(c)), "z")]
         data = DoubleMLData(df; y_col="y", d_cols="d", s_col="s", z_cols=zcols)
         smpls = load_smpls(joinpath(OUT, "bench_ssm_ni_smpls.json"))
-        m, sec = timed() do
+        m, sec, tmeta = timed_warm() do
             ssm = DoubleMLSSM(data, ols(), logit(), logit(); n_folds=N_FOLDS, n_rep=1,
                               draw_sample_splitting=false, score="nonignorable",
                               trimming_threshold=0.05, rng=MersenneTwister(3141 + 10))
@@ -265,7 +306,7 @@ function main()
             fit!(ssm)
             ssm
         end
-        models["SSM_nonignorable"] = pack(m, sec; theta_true=1.0)
+        models["SSM_nonignorable"] = pack(m, sec; theta_true=1.0, timing=tmeta)
     catch e
         models["SSM_nonignorable"] = Dict("error" => string(e), "seconds" => nothing)
     end

@@ -120,7 +120,10 @@ model.confint()                →    confint(model)
 | **effects_table / plot_effects** | DID multi event-study / group / time table | ✅ |
 | **store_models (IRM/PLIV/SSM)** | Fold-level fitted nuisances when requested | ✅ |
 | **tune! SSM/DID/PLPR** | Grid/random hyperparameter search | ✅ |
-| **sensitivity_contour** | Numerical cf_y × cf_d grid (plot-ready DataFrame) | ✅ |
+| **sensitivity_contour / sensitivity_plot** | Numerical cf_y × cf_d grid (plot-ready DataFrame; plot alias) | ✅ |
+| **Framework sensitivity** | `sensitivity_analysis!` / contour / summary on `construct_framework` (PLR/IRM) | ✅ |
+| **PSProcessor** | Propensity clip config (Python `PSProcessor` / `PSProcessorConfig`) on IRM | ✅ |
+| **Confounded / hetero DGPs** | `make_confounded_plr_data`, `make_confounded_irm_data`, `make_heterogeneous_data`, discrete treatments | ✅ |
 | **SSM** | Sample selection (`missing-at-random` / basic `nonignorable`) | ✅ |
 | **RDD** | Sharp/fuzzy RD with ML residualization + local linear | ✅ |
 | **Cluster SE** | One-way post-hoc + **cluster-in-fit** (1/2-way) for PLR/IRM | ✅ |

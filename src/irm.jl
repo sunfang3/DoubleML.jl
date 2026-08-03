@@ -15,6 +15,7 @@ mutable struct DoubleMLIRM <: AbstractDoubleML
     n_rep::Int
     score::String
     trimming_threshold::Float64
+    ps_processor::PSProcessor
     weights::Union{Nothing,Vector{Float64}}
     smpls::Vector
     smpls_cluster::Union{Nothing,Vector}
@@ -44,6 +45,7 @@ function DoubleMLIRM(data::DoubleMLData, ml_g, ml_m;
                      n_rep::Int=1,
                      score::AbstractString="ATE",
                      trimming_threshold::Real=1e-12,
+                     ps_processor::Union{Nothing,PSProcessor}=nothing,
                      weights::Union{Nothing,AbstractVector}=nothing,
                      draw_sample_splitting::Bool=true,
                      rng::AbstractRNG=Random.default_rng())
@@ -70,9 +72,11 @@ function DoubleMLIRM(data::DoubleMLData, ml_g, ml_m;
         Vector{Any}(), nothing, n_folds
     end
 
+    psp = resolve_ps_processor(ps_processor, trimming_threshold)
+
     return DoubleMLIRM(
         data, ml_g, ml_m, n_folds, n_rep, String(score),
-        Float64(trimming_threshold), w, smpls,
+        Float64(trimming_threshold), psp, w, smpls,
         smpls_cluster, n_fpc, nothing, is_cl, nothing,
         Float64[], Float64[],
         zeros(n_t, n_rep), zeros(n_t, n_rep),
@@ -120,7 +124,6 @@ function fit!(m::DoubleMLIRM; store_predictions::Bool=true,
     n = n_obs(data)
     n_rep = m.n_rep
     n_t = n_treat(data)
-    ε = m.trimming_threshold
     is_cl = is_cluster_data(data)
 
     if isempty(m.smpls)
@@ -184,7 +187,7 @@ function fit!(m::DoubleMLIRM; store_predictions::Bool=true,
                                        params_factory=m_pf,
                                        store_models=store_models)
             end
-            m̂ = clamp.(m̂, ε, 1 - ε)
+            m̂ = process_propensity(m̂, m.ps_processor)
             if store_models && j == 1 && r == 1
                 models_store["ml_g0"] = models0
                 models_store["ml_g1"] = models1

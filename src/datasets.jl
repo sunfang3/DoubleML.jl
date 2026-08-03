@@ -352,3 +352,259 @@ function make_rdd_data(; n_obs::Int=2000, dim_x::Int=3, tau::Real=1.0,
     y = (1 .- d) .* Y0 .+ d .* Y1
     return DoubleMLData(X, y, d; y_col="y", d_col="d", score=score)
 end
+
+# ---- golden-section scalar minimizer (for confounded DGPs) -----------------
+
+function _minimize_scalar(f; lo::Float64=-20.0, hi::Float64=20.0, n_iter::Int=80)
+    φ = (sqrt(5) - 1) / 2
+    a, b = lo, hi
+    c = b - φ * (b - a)
+    d = a + φ * (b - a)
+    fc, fd = f(c), f(d)
+    for _ in 1:n_iter
+        if fc < fd
+            b, d, fd = d, c, fc
+            c = b - φ * (b - a)
+            fc = f(c)
+        else
+            a, c, fc = c, d, fd
+            d = a + φ * (b - a)
+            fd = f(d)
+        end
+    end
+    return (a + b) / 2
+end
+
+"""
+    make_confounded_plr_data(; n_obs=500, theta=5.0, cf_y=0.04, cf_d=0.04,
+                             dim_x=4, c=0.0, seed=nothing) -> NamedTuple
+
+Confounded PLR DGP (Python `make_confounded_plr_data`). Returns
+`(x, y, d, oracle_values, data)` where `data` is a `DoubleMLData` on observed `(X,y,d)`.
+"""
+function make_confounded_plr_data(; n_obs::Int=500, theta::Real=5.0,
+                                  cf_y::Real=0.04, cf_d::Real=0.04,
+                                  dim_x::Int=4, c::Real=0.0, seed=nothing)
+    rng = seed === nothing ? Random.default_rng() : MersenneTwister(seed)
+    dim_x >= 4 || throw(ArgumentError("dim_x ≥ 4"))
+    (0 <= cf_y < 1) || throw(ArgumentError("cf_y in [0,1)"))
+    (0 <= cf_d < 1) || throw(ArgumentError("cf_d in [0,1)"))
+
+    # Toeplitz corr
+    Σ = [c^abs(i - j) for i in 1:dim_x, j in 1:dim_x]
+    # simple multivariate normal via Cholesky
+    L = cholesky(Symmetric(Σ + 1e-10I)).L
+    x = (L * randn(rng, dim_x, n_obs))'
+
+    z_tilde_1 = exp.(0.5 .* x[:, 1])
+    z_tilde_2 = 10 .+ x[:, 2] ./ (1 .+ exp.(x[:, 1]))
+    z_tilde_3 = (0.6 .+ x[:, 1] .* x[:, 3] ./ 25) .^ 3
+    z_tilde_4 = (20 .+ x[:, 2] .+ x[:, 4]) .^ 2
+    z_tilde = hcat(z_tilde_1, z_tilde_2, z_tilde_3, z_tilde_4, x[:, 5:end])
+    z = (z_tilde .- mean(z_tilde; dims=1)) ./ std(z_tilde; dims=1)
+
+    var_eps_y = 5.0
+    eps_y = sqrt(var_eps_y) .* randn(rng, n_obs)
+    var_eps_d = 1.0
+    eps_d = sqrt(var_eps_d) .* randn(rng, n_obs)
+
+    a = 2 .* rand(rng, n_obs) .- 1  # U[-1,1]
+    var_a = 4.0 / 12  # (2)^2/12
+
+    m_short = -z[:, 1] .+ 0.5 .* z[:, 2] .- 0.25 .* z[:, 3] .- 0.1 .* z[:, 4]
+
+    function f_m(gamma_a)
+        rr_long = eps_d ./ var_eps_d
+        rr_short = (gamma_a .* a .+ eps_d) ./ (gamma_a^2 * var_a + var_eps_d)
+        C2_D = (mean(rr_long .^ 2) - mean(rr_short .^ 2)) / mean(rr_short .^ 2)
+        return (C2_D / (1 + C2_D) - cf_d)^2
+    end
+    gamma_a = _minimize_scalar(f_m; lo=-10.0, hi=10.0)
+    m_long = m_short .+ gamma_a .* a
+    d = m_long .+ eps_d
+
+    g_partial = 210 .+ 27.4 .* z[:, 1] .+ 13.7 .* (z[:, 2] .+ z[:, 3] .+ z[:, 4])
+    var_d = var(d)
+
+    function f_g(beta_a)
+        g_diff = beta_a .* (a .- gamma_a * (var_a / var_d) .* d)
+        y_diff = eps_y .+ g_diff
+        return (mean(g_diff .^ 2) / mean(y_diff .^ 2) - cf_y)^2
+    end
+    beta_a = _minimize_scalar(f_g; lo=-20.0, hi=20.0)
+
+    g_long = theta .* d .+ g_partial .+ beta_a .* a
+    g_short = (theta + gamma_a * beta_a * var_a / var_d) .* d .+ g_partial
+    y = g_long .+ eps_y
+
+    oracle = (
+        g_long=g_long, g_short=g_short, m_long=m_long, m_short=m_short,
+        theta=Float64(theta), gamma_a=gamma_a, beta_a=beta_a, a=a, z=z,
+        cf_y=Float64(cf_y), cf_d=Float64(cf_d),
+    )
+    data = DoubleMLData(Matrix(x), y, d; y_col="y", d_col="d")
+    return (x=Matrix(x), y=y, d=d, oracle_values=oracle, data=data)
+end
+
+"""
+    make_confounded_irm_data(; n_obs=500, theta=0.0, gamma_a=0.127, beta_a=0.58,
+                             linear=false, dim_x=5, seed=nothing) -> NamedTuple
+
+Confounded IRM DGP (Python `make_confounded_irm_data`). Returns
+`(x, y, d, oracle_values, data)`.
+"""
+function make_confounded_irm_data(; n_obs::Int=500, theta::Real=0.0,
+                                  gamma_a::Real=0.127, beta_a::Real=0.58,
+                                  linear::Bool=false, dim_x::Int=5,
+                                  trimming_threshold::Real=0.01,
+                                  var_eps_y::Real=1.0, seed=nothing)
+    rng = seed === nothing ? Random.default_rng() : MersenneTwister(seed)
+    dim_x >= 5 || throw(ArgumentError("dim_x ≥ 5"))
+    xi = 0.75
+    x = randn(rng, n_obs, dim_x)
+    z_tilde = hcat(
+        exp.(0.5 .* x[:, 1]),
+        10 .+ x[:, 2] ./ (1 .+ exp.(x[:, 1])),
+        (0.6 .+ x[:, 1] .* x[:, 3] ./ 25) .^ 3,
+        (20 .+ x[:, 2] .+ x[:, 4]) .^ 2,
+        x[:, 5],
+    )
+    z = (z_tilde .- mean(z_tilde; dims=1)) ./ std(z_tilde; dims=1)
+    features = linear ? x : z
+
+    f_ps = xi .* (-features[:, 1] .+ 0.1 .* features[:, 2] .- 0.25 .* features[:, 3] .- 0.1 .* features[:, 4])
+    p = exp.(f_ps) ./ (1 .+ exp.(f_ps))
+    m_long = p .+ gamma_a .* (2 .* rand(rng, n_obs) .- 1)
+    # regenerate a consistently
+    a = 2 .* rand(rng, n_obs) .- 1
+    m_long = p .+ gamma_a .* a
+    m_short = copy(p)
+    thr = Float64(trimming_threshold)
+    m_long = clamp.(m_long, thr, 1 - thr)
+    m_short = clamp.(m_short, thr, 1 - thr)
+    u = rand(rng, n_obs)
+    d = Float64.(m_long .>= u)
+
+    f_reg = 2.5 .+ 0.74 .* features[:, 1] .+ 0.25 .* features[:, 2] .+
+            0.137 .* (features[:, 3] .+ features[:, 4])
+    d1x = z[:, 5] .+ 1
+    var_a = 4.0 / 12
+    var_dx = var(d .* d1x)
+    cov_adx = gamma_a * var_a
+    g_short_d0 = f_reg
+    g_short_d1 = (theta + beta_a * cov_adx / max(var_dx, eps())) .* d1x .+ f_reg
+    g_short = d .* g_short_d1 .+ (1 .- d) .* g_short_d0
+    g_long_d0 = f_reg .+ beta_a .* a
+    g_long_d1 = theta .* d1x .+ f_reg .+ beta_a .* a
+    g_long = d .* g_long_d1 .+ (1 .- d) .* g_long_d0
+    eps_y = sqrt(var_eps_y) .* randn(rng, n_obs)
+    y0 = g_long_d0 .+ eps_y
+    y1 = g_long_d1 .+ eps_y
+    y = d .* y1 .+ (1 .- d) .* y0
+
+    explained = (g_long .- g_short) .^ 2
+    residual = (y .- g_short) .^ 2
+    cf_y_hat = mean(explained) / max(mean(residual), eps())
+    cf_d_ate = (mean(1 ./ (m_long .* (1 .- m_long))) - mean(1 ./ (m_short .* (1 .- m_short)))) /
+               max(mean(1 ./ (m_long .* (1 .- m_long))), eps())
+
+    oracle = (
+        g_long=g_long, g_short=g_short, m_long=m_long, m_short=m_short,
+        gamma_a=Float64(gamma_a), beta_a=Float64(beta_a), a=a, y_0=y0, y_1=y1, z=z,
+        cf_y=cf_y_hat, cf_d_ate=cf_d_ate, theta=Float64(theta),
+    )
+    # observed covariates: use z for nonlinear / x for linear (matches Python return of x)
+    Xobs = linear ? x : Matrix(z)
+    data = DoubleMLData(Xobs, y, d; y_col="y", d_col="d")
+    return (x=Xobs, y=y, d=d, oracle_values=oracle, data=data)
+end
+
+"""
+    make_heterogeneous_data(; n_obs=200, p=30, support_size=5, n_x=1,
+                            binary_treatment=false, seed=nothing) -> NamedTuple
+
+CATE DGP (Python `make_heterogeneous_data`). Returns
+`(data, effects, treatment_effect, dml_data)` where `treatment_effect` is a
+function of the covariate matrix and `effects` is the true CATE per row.
+"""
+function make_heterogeneous_data(; n_obs::Int=200, p::Int=30, support_size::Int=5,
+                                 n_x::Int=1, binary_treatment::Bool=false, seed=nothing)
+    rng = seed === nothing ? Random.default_rng() : MersenneTwister(seed)
+    n_x in (1, 2) || throw(ArgumentError("n_x must be 1 or 2"))
+    support_size <= p || throw(ArgumentError("support_size ≤ p"))
+
+    treatment_effect = if n_x == 1
+        x -> exp.(2 .* x[:, 1]) .+ 3 .* sin.(4 .* x[:, 1])
+    else
+        x -> exp.(2 .* x[:, 1]) .+ 3 .* sin.(4 .* x[:, 2])
+    end
+
+    X = rand(rng, n_obs, p)
+    support = 1:support_size
+    γ = zeros(p); β = zeros(p)
+    γ[support] = rand(rng, support_size)
+    β[support] = 0.3 .* rand(rng, support_size)
+    η = 2 .* rand(rng, n_obs) .- 1
+    ε = 2 .* rand(rng, n_obs) .- 1
+    if binary_treatment
+        d = Float64.((X * β) .>= η)
+    else
+        d = X * β .+ η
+    end
+    te = treatment_effect(X)
+    y = te .* d .+ X * γ .+ ε
+    df = DataFrame(X, :auto)
+    rename!(df, ["X$i" for i in 1:p])
+    df.y = y
+    df.d = d
+    dml = DoubleMLData(X, y, d; y_col="y", d_col="d")
+    return (data=df, effects=te, treatment_effect=treatment_effect, dml_data=dml)
+end
+
+"""
+    make_irm_data_discrete_treatments(; n_obs=200, n_levels=3, linear=false,
+                                      seed=nothing) -> NamedTuple
+
+Multi-level treatment IRM DGP (Python `make_irm_data_discrete_treatments`).
+Returns `(x, y, d, d_cont, oracle_values, data)` with discrete `d ∈ 0:(n_levels-1)`
+and continuous latent treatment `d_cont`.
+"""
+function make_irm_data_discrete_treatments(; n_obs::Int=200, n_levels::Int=3,
+                                           linear::Bool=false, seed=nothing)
+    rng = seed === nothing ? Random.default_rng() : MersenneTwister(seed)
+    n_levels >= 2 || throw(ArgumentError("n_levels ≥ 2"))
+    dim_x = 5
+    x = randn(rng, n_obs, dim_x)
+    z_tilde = hcat(
+        exp.(0.5 .* x[:, 1]),
+        10 .+ x[:, 2] ./ (1 .+ exp.(x[:, 1])),
+        (0.6 .+ x[:, 1] .* x[:, 3] ./ 25) .^ 3,
+        (20 .+ x[:, 2] .+ x[:, 4]) .^ 2,
+        x[:, 5],
+    )
+    z = (z_tilde .- mean(z_tilde; dims=1)) ./ std(z_tilde; dims=1)
+    features = linear ? x : z
+    ξ = 0.3
+    d_cont = ξ .* (-features[:, 1] .+ 0.5 .* features[:, 2] .- 0.25 .* features[:, 3] .- 0.1 .* features[:, 4]) .+
+             randn(rng, n_obs)
+    # discrete levels by quantiles (equal mass including baseline 0 for d_cont ≤ 0? Python uses quantiles of d_cont)
+    # Simplified: map via quantile bins of d_cont to 0..n_levels-1
+    qs = [quantile(d_cont, k / n_levels) for k in 1:(n_levels - 1)]
+    d = zeros(n_obs)
+    for i in 1:n_obs
+        lvl = 0
+        for (k, q) in enumerate(qs)
+            d_cont[i] > q && (lvl = k)
+        end
+        d[i] = Float64(lvl)
+    end
+    θd = 0.1 .* exp.(d_cont) .+ 10 .* sin.(0.7 .* d_cont) .+ 2 .* d_cont .- 0.2 .* d_cont .^ 2
+    y0 = 210 .+ 27.4 .* z[:, 1] .+ 13.7 .* (z[:, 2] .+ z[:, 3] .+ z[:, 4]) .+
+         sqrt(5) .* randn(rng, n_obs)
+    y1 = θd .* Float64.(d_cont .> 0) .+ y0
+    y = ifelse.(d .> 0, y1, y0)
+    Xobs = linear ? x : Matrix(z)
+    data = DoubleMLData(Xobs, y, d; y_col="y", d_col="d")
+    oracle = (d_cont=d_cont, theta_of_d=θd, y_0=y0, y_1=y1, z=z)
+    return (x=Xobs, y=y, d=d, d_cont=d_cont, oracle_values=oracle, data=data)
+end

@@ -32,10 +32,14 @@ mutable struct DoubleMLFramework
     thetas::Vector{Float64}
     ses::Vector{Float64}
     boot::Union{Nothing,BootstrapResult}
+    # optional OVB sensitivity (copied from PLR/IRM via construct_framework)
+    sens_elements::Union{Nothing,SensitivityElements}
+    sensitivity::Union{Nothing,SensitivityResult}
 end
 
 function DoubleMLFramework(core::DoubleMLCore;
-                           treatment_names::Union{Nothing,AbstractVector{<:AbstractString}}=nothing)
+                           treatment_names::Union{Nothing,AbstractVector{<:AbstractString}}=nothing,
+                           sens_elements::Union{Nothing,SensitivityElements}=nothing)
     n_θ = size(core.all_thetas, 1)
     names = if treatment_names === nothing
         ["theta_$i" for i in 1:n_θ]
@@ -45,7 +49,7 @@ function DoubleMLFramework(core::DoubleMLCore;
         String.(collect(treatment_names))
     end
     thetas, ses = aggregate_reps(core.all_thetas, core.all_ses)
-    return DoubleMLFramework(core, names, thetas, ses, nothing)
+    return DoubleMLFramework(core, names, thetas, ses, nothing, sens_elements, nothing)
 end
 
 # ---- construct from fitted model -------------------------------------------
@@ -86,7 +90,13 @@ function construct_framework(m::AbstractDoubleML)
         copy(m.all_coef), copy(m.all_se), vsf, scaled, is_cl, cdict,
     )
     names = hasproperty(m, :treat_names) ? m.treat_names : ["theta_$i" for i in 1:n_coef]
-    return DoubleMLFramework(core; treatment_names=names)
+    # carry sensitivity building blocks when available (single-treatment elements)
+    selem = if hasproperty(m, :sens_elements) && m.sens_elements !== nothing && n_coef == 1
+        m.sens_elements
+    else
+        nothing
+    end
+    return DoubleMLFramework(core; treatment_names=names, sens_elements=selem)
 end
 
 """Default var scaling = n_obs for each coefficient (iid)."""
@@ -140,7 +150,8 @@ function Base.:+(a::DoubleMLFramework, b::DoubleMLFramework)
     core = DoubleMLCore(all_θ, all_se, copy(ca.var_scaling_factors), scaled,
                         ca.is_cluster_data, ca.cluster_dict)
     names = ["($(a.treatment_names[i])+$(b.treatment_names[i]))" for i in eachindex(a.treatment_names)]
-    return DoubleMLFramework(core; treatment_names=names)
+    # arithmetic drops OVB elements (not generally valid under +/−)
+    return DoubleMLFramework(core; treatment_names=names, sens_elements=nothing)
 end
 
 function Base.:-(a::DoubleMLFramework, b::DoubleMLFramework)
@@ -152,7 +163,7 @@ function Base.:-(a::DoubleMLFramework, b::DoubleMLFramework)
     core = DoubleMLCore(all_θ, all_se, copy(ca.var_scaling_factors), scaled,
                         ca.is_cluster_data, ca.cluster_dict)
     names = ["($(a.treatment_names[i])-$(b.treatment_names[i]))" for i in eachindex(a.treatment_names)]
-    return DoubleMLFramework(core; treatment_names=names)
+    return DoubleMLFramework(core; treatment_names=names, sens_elements=nothing)
 end
 
 function Base.:*(c::Real, a::DoubleMLFramework)
@@ -163,7 +174,9 @@ function Base.:*(c::Real, a::DoubleMLFramework)
     core = DoubleMLCore(all_θ, all_se, copy(ca.var_scaling_factors), scaled,
                         ca.is_cluster_data, ca.cluster_dict)
     names = ["$(c)*$(nm)" for nm in a.treatment_names]
-    return DoubleMLFramework(core; treatment_names=names)
+    # scaling preserves elements only for c == ±1; drop otherwise
+    selem = (abs(abs(c) - 1) < 1e-14) ? a.sens_elements : nothing
+    return DoubleMLFramework(core; treatment_names=names, sens_elements=selem)
 end
 Base.:*(a::DoubleMLFramework, c::Real) = c * a
 
@@ -303,4 +316,152 @@ end
 function Base.show(io::IO, f::DoubleMLFramework)
     print(io, "DoubleMLFramework(n_thetas=$(length(f.thetas)), ",
           "thetas=$(round.(f.thetas; digits=4)), ses=$(round.(f.ses; digits=4)))")
+end
+
+"""Python-compatible alias for framework contour grid."""
+sensitivity_plot(f::DoubleMLFramework; kwargs...) = sensitivity_contour(f; kwargs...)
+
+# ---- Framework sensitivity (Python DoubleMLFramework.sensitivity_*) --------
+
+"""
+    sensitivity_analysis!(f::DoubleMLFramework; cf_y=0.03, cf_d=0.03, rho=1.0,
+                          level=0.95, null_hypothesis=0.0)
+
+OVB sensitivity on a framework built from a model that stored sensitivity
+elements (typically PLR / IRM via [`construct_framework`](@ref)).
+Currently requires `n_thetas == 1`.
+"""
+function sensitivity_analysis!(f::DoubleMLFramework;
+                               cf_y::Real=0.03,
+                               cf_d::Real=0.03,
+                               rho::Real=1.0,
+                               level::Real=0.95,
+                               null_hypothesis::Real=0.0)
+    f.sens_elements === nothing &&
+        error("Framework has no sensitivity elements — construct from fitted PLR/IRM")
+    length(f.thetas) == 1 ||
+        error("Framework sensitivity currently supports n_thetas=1 (got $(length(f.thetas)))")
+
+    selem = f.sens_elements
+    n_rep = length(selem.sigma2)
+    strength = confounding_strength(cf_y, cf_d, rho)
+
+    all_psi_scaled = similar(selem.psi_sigma2)
+    all_psi_max = similar(selem.psi_sigma2)
+    all_max_bias = zeros(n_rep)
+    all_theta = vec(f.core.all_thetas[1, :])
+
+    for r in 1:n_rep
+        σ2 = selem.sigma2[r]
+        ν2 = selem.nu2[r]
+        mb, pmb = _max_bias_and_if(σ2, ν2, @view(selem.psi_sigma2[:, r]), @view(selem.psi_nu2[:, r]))
+        all_max_bias[r] = mb
+        all_psi_max[:, r] = pmb
+        # scaled scores already live in core.scaled_psi[:, 1, r]
+        all_psi_scaled[:, r] = @view f.core.scaled_psi[:, 1, r]
+    end
+
+    bounds = _sensitivity_bounds(all_theta, all_max_bias, all_psi_scaled, all_psi_max, strength, level)
+
+    function calc_c(c)
+        s = confounding_strength(c, c, rho)
+        _sensitivity_bounds(all_theta, all_max_bias, all_psi_scaled, all_psi_max, s, level)
+    end
+    θ̂ = f.thetas[1]
+    rv = _robustness_value(calc_c, null_hypothesis, θ̂; which=:theta)
+    rva = _robustness_value(calc_c, null_hypothesis, θ̂; which=:ci)
+
+    result = SensitivityResult(
+        Float64(cf_y), Float64(cf_d), Float64(rho), Float64(level), Float64(null_hypothesis),
+        [bounds.theta_lower], [bounds.theta_upper],
+        [bounds.se_lower], [bounds.se_upper],
+        [bounds.ci_lower], [bounds.ci_upper],
+        [rv], [rva],
+    )
+    f.sensitivity = result
+    return result
+end
+
+function sensitivity_summary(f::DoubleMLFramework)
+    r = f.sensitivity
+    r === nothing && return "Apply sensitivity_analysis! first."
+    io = IOBuffer()
+    println(io, "================== Sensitivity Analysis ==================")
+    println(io, "------------------ Scenario          ------------------")
+    println(io, "Significance Level: level=$(r.level)")
+    println(io, "Sensitivity parameters: cf_y=$(r.cf_y); cf_d=$(r.cf_d), rho=$(r.rho)")
+    println(io, "------------------ Bounds with CI    ------------------")
+    println(io, DataFrame(
+        treatment = f.treatment_names,
+        ci_lower = r.ci_lower,
+        theta_lower = r.theta_lower,
+        theta = f.thetas,
+        theta_upper = r.theta_upper,
+        ci_upper = r.ci_upper,
+    ))
+    println(io, "------------------ Robustness Values ------------------")
+    println(io, DataFrame(treatment=f.treatment_names, rv=r.rv, rva=r.rva,
+                          null_hypothesis=fill(r.null_hypothesis, length(r.rv))))
+    return String(take!(io))
+end
+
+"""
+    sensitivity_contour(f::DoubleMLFramework; ...) -> DataFrame
+
+Contour grid for a framework with sensitivity elements (same API as model version).
+"""
+function sensitivity_contour(f::DoubleMLFramework;
+                             cf_y_max::Real=0.15,
+                             cf_d_max::Real=0.15,
+                             grid_size::Int=20,
+                             rho::Real=1.0,
+                             level::Real=0.95,
+                             null_hypothesis::Real=0.0,
+                             value::Symbol=:theta)
+    f.sens_elements === nothing &&
+        error("Framework has no sensitivity elements")
+    length(f.thetas) == 1 || error("n_thetas=1 required for framework contour")
+    value in (:theta, :ci) || throw(ArgumentError("value must be :theta or :ci"))
+    grid_size >= 2 || throw(ArgumentError("grid_size ≥ 2"))
+
+    selem = f.sens_elements
+    n_rep = length(selem.sigma2)
+    all_psi_scaled = similar(selem.psi_sigma2)
+    all_psi_max = similar(selem.psi_sigma2)
+    all_max_bias = zeros(n_rep)
+    all_theta = vec(f.core.all_thetas[1, :])
+    for r in 1:n_rep
+        mb, pmb = _max_bias_and_if(selem.sigma2[r], selem.nu2[r],
+                                   @view(selem.psi_sigma2[:, r]), @view(selem.psi_nu2[:, r]))
+        all_max_bias[r] = mb
+        all_psi_max[:, r] = pmb
+        all_psi_scaled[:, r] = @view f.core.scaled_psi[:, 1, r]
+    end
+
+    ys = range(0.0, Float64(cf_y_max); length=grid_size)
+    ds = range(0.0, Float64(cf_d_max); length=grid_size)
+    rows_cfy = Float64[]; rows_cfd = Float64[]
+    tl = Float64[]; tu = Float64[]; cl = Float64[]; cu = Float64[]
+    covers = Bool[]
+    for cy in ys, cd in ds
+        strength = confounding_strength(cy, cd, rho)
+        b = _sensitivity_bounds(all_theta, all_max_bias, all_psi_scaled, all_psi_max, strength, level)
+        push!(rows_cfy, cy); push!(rows_cfd, cd)
+        push!(tl, b.theta_lower); push!(tu, b.theta_upper)
+        push!(cl, b.ci_lower); push!(cu, b.ci_upper)
+        if value === :theta
+            push!(covers, b.theta_lower <= null_hypothesis <= b.theta_upper)
+        else
+            push!(covers, b.ci_lower <= null_hypothesis <= b.ci_upper)
+        end
+    end
+    return DataFrame(
+        cf_y = rows_cfy, cf_d = rows_cfd,
+        theta_lower = tl, theta_upper = tu,
+        ci_lower = cl, ci_upper = cu,
+        covers_null = covers,
+        rho = fill(Float64(rho), length(rows_cfy)),
+        level = fill(Float64(level), length(rows_cfy)),
+        value = fill(String(value), length(rows_cfy)),
+    )
 end

@@ -413,3 +413,11 @@ function sensitivity_benchmark(dml_long::AbstractDoubleML, dml_short::AbstractDo
     return (cf_y=cf_y, cf_d=cf_d, rho=rho, delta_theta=δθ,
             theta_long=dml_long.coef[1], theta_short=dml_short.coef[1])
 end
+
+"""
+    sensitivity_plot(m; kwargs...)
+
+Python-compatible alias for [`sensitivity_contour`](@ref) (returns a
+numerical grid `DataFrame`; plotting is left to the user).
+"""
+sensitivity_plot(m::AbstractDoubleML; kwargs...) = sensitivity_contour(m; kwargs...)

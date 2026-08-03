@@ -114,6 +114,11 @@ export
     design_for_treatment,
     is_cluster_data,
     n_cluster_vars,
+    # propensity score processing (Python PSProcessor)
+    PSProcessor,
+    PSProcessorConfig,
+    process_propensity,
+    resolve_ps_processor,
     # tuning
     tune!,
     tune_learner,
@@ -124,6 +129,7 @@ export
     sensitivity_summary,
     sensitivity_benchmark,
     sensitivity_contour,
+    sensitivity_plot,
     SensitivityResult,
     SensitivityElements,
     # heterogeneous effects (CATE / GATE)
@@ -151,16 +157,21 @@ export
     make_plpr_data,
     make_ssm_data,
     make_did_panel_data,
-    make_rdd_data
+    make_rdd_data,
+    make_confounded_plr_data,
+    make_confounded_irm_data,
+    make_heterogeneous_data,
+    make_irm_data_discrete_treatments
 
 include("learners.jl")
 include("data.jl")
 include("sample_splitting.jl")
 include("base.jl")       # AbstractDoubleML, confint, summary_table, p_adjust
 include("bootstrap.jl")  # BootstrapResult, bootstrap! (needs AbstractDoubleML)
-include("framework.jl")  # DoubleMLFramework / concat / algebra
+include("ps_processor.jl")  # PSProcessor / process_propensity
 include("cluster.jl")    # cluster SE + var_est
-include("sensitivity.jl")
+include("sensitivity.jl")  # before framework (sens elements on Framework)
+include("framework.jl")  # DoubleMLFramework / concat / algebra / sens
 include("plr.jl")
 include("irm.jl")
 include("pliv.jl")

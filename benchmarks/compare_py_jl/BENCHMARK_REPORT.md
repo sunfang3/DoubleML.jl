@@ -1,18 +1,11 @@
-# Algorithm Benchmark Round 4 — Warm multi-rep runtime + accuracy gate
+# Algorithm Benchmark: Python DoubleML vs Julia DoubleML.jl
 
-| | |
-|--|--|
-| **Python** | DoubleML `0.11.3` |
-| **Julia** | DoubleML.jl `1.4.0` |
-| **Date** | 2026-08-03 |
-| **Fit protocol** | Shared CSV + shared K-fold where applicable; OLS / near-unregularized logistic; `n_rep=1`; seed 3141 |
-| **Timing protocol** | `warm_median`: discard **1** cold fit; **median of 3** warm fits. Field `seconds` = warm median |
-| **Runtime gate (gating metric)** | Sum of warm seconds over timed main models; bookkeeping (Framework / sensitivity) excluded. Pass if `(t_jl − t_py) / t_py ≤ 0.30` i.e. `t_jl ≤ 1.3 × t_py` |
-
-Coverage: PLR, IRM, PLIV, IIVM, multi-PLR, Framework, PLPR×4, DID, DID multi, RDFlex, SSM MAR, SSM nonignorable, PLR sensitivity.
-
-**RUNTIME_GAP_PASS: true** — warm total Py **1.765 s** vs Jl **0.033 s** (gap **−98%**, Julia ~53× faster when warm).  
-Cold totals (not gated): Py 2.12 s / Jl 8.61 s (Julia JIT-dominated).
+- **Python**: DoubleML `0.11.3`
+- **Julia**: DoubleML.jl `1.4.0`
+- **Protocol**: shared CSV + shared K-fold (where applicable); OLS / near-unregularized logistic; `n_rep=1`
+- **Timing protocol**: `warm_median` (discard 1 cold fit; median of 3 warm fits). `seconds` = warm median.
+- **Seed**: 3141, default `n_folds=5`
+- **Runtime gate**: `(t_jl − t_py) / t_py ≤ 0.30` on **sum of warm** seconds over timed main models (bookkeeping rows excluded).
 
 ## Coefficient & SE comparison
 

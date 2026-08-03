@@ -79,7 +79,7 @@ end
 function main()
     results = Dict{String,Any}(
         "backend" => "julia",
-        "doubleml" => "1.4.0",
+        "doubleml" => "1.5.0",
         "seed" => 3141,
         "n_folds" => N_FOLDS,
         "timing_protocol" => "warm_median",

@@ -1106,4 +1106,71 @@ using Statistics
         @test haskey(pliv.models, "ml_l")
         @test length(pliv.models["ml_l"]) == 3
     end
+
+    @testset "PSProcessor clips propensities" begin
+        p = PSProcessor(clipping_threshold=0.05, extreme_threshold=1e-8)
+        @test p isa PSProcessorConfig  # alias
+        raw = [0.0, 0.5, 1.0, -0.1, 1.2]
+        out = process_propensity(raw, p)
+        @test all(out .>= 0.05 - 1e-12)
+        @test all(out .<= 0.95 + 1e-12)
+        out2 = process_propensity(raw, 0.01)
+        @test minimum(out2) ≈ 0.01 atol=1e-12
+
+        data = make_irm_data(n_obs=500, dim_x=3, theta=0.5; seed=951)
+        irm = DoubleMLIRM(data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+                          n_folds=3, ps_processor=PSProcessor(clipping_threshold=0.02),
+                          rng=MersenneTwister(951))
+        fit!(irm)
+        @test isfinite(irm.coef[1])
+        @test irm.ps_processor.clipping_threshold == 0.02
+    end
+
+    @testset "Framework sensitivity from PLR" begin
+        data = make_plr_data(n_obs=600, dim_x=5, theta=0.5; seed=952)
+        plr = DoubleMLPLR(data, LinearRegressionLearner(), LinearRegressionLearner();
+                          n_folds=3, rng=MersenneTwister(952))
+        fit!(plr)
+        sensitivity_analysis!(plr; cf_y=0.04, cf_d=0.03)
+        fw = construct_framework(plr)
+        @test fw.sens_elements !== nothing
+        r = sensitivity_analysis!(fw; cf_y=0.04, cf_d=0.03)
+        @test r.theta_lower[1] ≈ plr.sensitivity.theta_lower[1] atol=1e-10
+        @test r.rv[1] ≈ plr.sensitivity.rv[1] atol=1e-6
+        grid = sensitivity_plot(fw; cf_y_max=0.1, cf_d_max=0.1, grid_size=4)
+        @test nrow(grid) == 16
+        s = sensitivity_summary(fw)
+        @test occursin("Robustness", s)
+        # arithmetic drops sens
+        fw2 = 2 * fw
+        @test fw2.sens_elements === nothing
+    end
+
+    @testset "Confounded / heterogeneous / discrete DGPs" begin
+        cplr = make_confounded_plr_data(n_obs=400, theta=2.0, cf_y=0.05, cf_d=0.05; seed=953)
+        @test length(cplr.y) == 400
+        @test cplr.data isa DoubleMLData
+        plr = DoubleMLPLR(cplr.data, LinearRegressionLearner(), LinearRegressionLearner();
+                          n_folds=3, rng=MersenneTwister(953))
+        fit!(plr)
+        @test isfinite(plr.coef[1])
+        sensitivity_analysis!(plr; cf_y=0.05, cf_d=0.05)
+        @test plr.sensitivity.rv[1] > 0
+
+        cirm = make_confounded_irm_data(n_obs=400, theta=0.5, linear=true; seed=954)
+        irm = DoubleMLIRM(cirm.data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+                          n_folds=3, rng=MersenneTwister(954))
+        fit!(irm)
+        @test isfinite(irm.coef[1])
+
+        het = make_heterogeneous_data(n_obs=300, p=10, support_size=3, n_x=1,
+                                      binary_treatment=true; seed=955)
+        @test length(het.effects) == 300
+        @test het.dml_data isa DoubleMLData
+        @test Set(unique(het.dml_data.d)) ⊆ Set([0.0, 1.0])
+
+        disc = make_irm_data_discrete_treatments(n_obs=250, n_levels=3; seed=956)
+        @test length(unique(disc.d)) >= 2
+        @test length(disc.d_cont) == 250
+    end
 end

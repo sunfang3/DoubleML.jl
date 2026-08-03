@@ -72,6 +72,19 @@ function predict(m::RidgeLearner, X::AbstractMatrix)
     return m.intercept .+ Float64.(X) * m.coef
 end
 
+function get_params(m::RidgeLearner)
+    return Dict{Symbol,Any}(:α => m.α, :fit_intercept => m.fit_intercept)
+end
+
+function set_params!(m::RidgeLearner; α=nothing, fit_intercept=nothing, kwargs...)
+    α !== nothing && (m.α = Float64(α))
+    fit_intercept !== nothing && (m.fit_intercept = Bool(fit_intercept))
+    m.fitted = false
+    m.coef = Float64[]
+    m.intercept = 0.0
+    return m
+end
+
 # ========================= Logistic regression (L2) =========================
 
 """
@@ -176,6 +189,27 @@ function predict(m::LogisticRegressionLearner, X::AbstractMatrix)
     return Float64.(predict_proba(m, X) .>= 0.5)
 end
 
+function get_params(m::LogisticRegressionLearner)
+    return Dict{Symbol,Any}(
+        :α => m.α,
+        :fit_intercept => m.fit_intercept,
+        :max_iter => m.max_iter,
+        :tol => m.tol,
+    )
+end
+
+function set_params!(m::LogisticRegressionLearner; α=nothing, fit_intercept=nothing,
+                     max_iter=nothing, tol=nothing, kwargs...)
+    α !== nothing && (m.α = Float64(α))
+    fit_intercept !== nothing && (m.fit_intercept = Bool(fit_intercept))
+    max_iter !== nothing && (m.max_iter = Int(max_iter))
+    tol !== nothing && (m.tol = Float64(tol))
+    m.fitted = false
+    m.coef = Float64[]
+    m.intercept = 0.0
+    return m
+end
+
 # ========================= Random forests (DecisionTree.jl) =========================
 
 """
@@ -218,6 +252,24 @@ function predict(m::RandomForestRegressorLearner, X::AbstractMatrix)
     m.fitted || error("RandomForestRegressorLearner is not fitted")
     Xf = Matrix{Float64}(X)
     return apply_forest(m.model, Xf)
+end
+
+function get_params(m::RandomForestRegressorLearner)
+    return Dict{Symbol,Any}(
+        :n_trees => m.n_trees,
+        :max_depth => m.max_depth,
+        :min_samples_leaf => m.min_samples_leaf,
+    )
+end
+
+function set_params!(m::RandomForestRegressorLearner; n_trees=nothing, max_depth=nothing,
+                     min_samples_leaf=nothing, kwargs...)
+    n_trees !== nothing && (m.n_trees = Int(n_trees))
+    max_depth !== nothing && (m.max_depth = Int(max_depth))
+    min_samples_leaf !== nothing && (m.min_samples_leaf = Int(min_samples_leaf))
+    m.fitted = false
+    m.model = nothing
+    return m
 end
 
 """
@@ -280,6 +332,25 @@ function predict_proba(m::RandomForestClassifierLearner, X::AbstractMatrix)
         return zeros(size(X, 1))
     end
     return vec(proba[:, idx])
+end
+
+function get_params(m::RandomForestClassifierLearner)
+    return Dict{Symbol,Any}(
+        :n_trees => m.n_trees,
+        :max_depth => m.max_depth,
+        :min_samples_leaf => m.min_samples_leaf,
+    )
+end
+
+function set_params!(m::RandomForestClassifierLearner; n_trees=nothing, max_depth=nothing,
+                     min_samples_leaf=nothing, kwargs...)
+    n_trees !== nothing && (m.n_trees = Int(n_trees))
+    max_depth !== nothing && (m.max_depth = Int(max_depth))
+    min_samples_leaf !== nothing && (m.min_samples_leaf = Int(min_samples_leaf))
+    m.fitted = false
+    m.model = nothing
+    m.classes = []
+    return m
 end
 
 # ========================= Cross-fit helper =========================

@@ -195,4 +195,67 @@ using Statistics
         @test dml.se[1] > 0
         @test abs(dml.coef[1] - 0.5) < 0.35
     end
+
+    @testset "Learner set_params / get_params" begin
+        r = RidgeLearner(α=1.0)
+        @test get_params(r)[:α] == 1.0
+        set_params!(r; α=0.25)
+        @test r.α == 0.25
+        @test !r.fitted
+        clf = LogisticRegressionLearner(α=2.0)
+        set_params!(clf; α=0.5, max_iter=50)
+        @test clf.α == 0.5 && clf.max_iter == 50
+        rf = RandomForestRegressorLearner(n_trees=10, max_depth=3)
+        set_params!(rf; n_trees=20, max_depth=5)
+        @test rf.n_trees == 20 && rf.max_depth == 5
+    end
+
+    @testset "tune_learner grid search" begin
+        Random.seed!(1)
+        n, p = 300, 4
+        X = randn(n, p)
+        y = X[:, 1] .+ 0.1 .* randn(n)
+        learner = RidgeLearner(α=100.0)  # deliberately poor default
+        best, res = tune_learner(learner, X, y, Dict(:α => [0.01, 0.1, 1.0, 10.0, 100.0]);
+                                 n_folds=4, rng=MersenneTwister(1))
+        @test res.best_score < Inf
+        @test length(res.all_scores) == 5
+        # best α should prefer small regularization for this signal
+        @test res.best_params[:α] <= 1.0
+        @test get_params(best)[:α] == res.best_params[:α]
+    end
+
+    @testset "tune! PLR then fit" begin
+        data = make_plr_data(n_obs=700, dim_x=8, theta=0.5; seed=33)
+        dml = DoubleMLPLR(data, RidgeLearner(α=50.0), RidgeLearner(α=50.0);
+                          n_folds=4, rng=MersenneTwister(33))
+        tres = tune!(dml; param_grids=Dict(
+            :ml_l => Dict(:α => [0.01, 0.1, 1.0, 10.0, 50.0]),
+            :ml_m => Dict(:α => [0.01, 0.1, 1.0, 10.0, 50.0]),
+        ), n_folds_tune=3, rng=MersenneTwister(34))
+        @test haskey(tres, :ml_l) && haskey(tres, :ml_m)
+        @test !dml.fitted
+        fit!(dml)
+        @test abs(dml.coef[1] - 0.5) < 0.2
+        @test dml.se[1] > 0
+    end
+
+    @testset "tune! random search IRM" begin
+        data = make_irm_data(n_obs=800, dim_x=5, theta=0.5; seed=44)
+        dml = DoubleMLIRM(
+            data,
+            RidgeLearner(α=10.0),
+            LogisticRegressionLearner(α=10.0);
+            n_folds=4,
+            trimming_threshold=0.05,
+            rng=MersenneTwister(44),
+        )
+        tres = tune!(dml; param_grids=Dict(
+            :ml_g => Dict(:α => [0.1, 1.0, 10.0]),
+            :ml_m => Dict(:α => [0.1, 1.0, 10.0]),
+        ), search_mode=:random, n_iter=4, n_folds_tune=3, rng=MersenneTwister(45))
+        @test haskey(tres, :ml_g)
+        fit!(dml)
+        @test isfinite(dml.coef[1])
+    end
 end

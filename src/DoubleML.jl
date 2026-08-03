@@ -14,6 +14,9 @@ API-aligned with the Python package [DoubleML](https://docs.doubleml.org/).
 - Pointwise: `confint(m)`
 - Joint (multiplier bootstrap): `bootstrap!(m)` then `confint(m; joint=true)`
 
+# Tuning
+- `tune!(m; param_grids=...)` then `fit!(m)`
+
 See also: https://github.com/DoubleML/doubleml-for-py
 """
 module DoubleML
@@ -42,6 +45,8 @@ export
     predict,
     predict_proba,
     clone,
+    get_params,
+    set_params!,
     # models
     AbstractDoubleML,
     DoubleMLPLR,
@@ -55,6 +60,11 @@ export
     dml_summary,
     bootstrap!,
     BootstrapResult,
+    # tuning
+    tune!,
+    tune_learner,
+    TuneResult,
+    cv_score,
     # datasets
     make_plr_data,
     make_irm_data,
@@ -70,6 +80,7 @@ include("plr.jl")
 include("irm.jl")
 include("pliv.jl")
 include("iivm.jl")
+include("tune.jl")
 include("datasets.jl")
 
 end # module

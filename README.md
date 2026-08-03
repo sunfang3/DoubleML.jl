@@ -100,7 +100,7 @@ model.confint()                →    confint(model)
 | **PLIV** | `:partialZ` / `:partialXZ` | ✅ |
 | **IIVM** | `LATE` | ✅ |
 | **Multiplier bootstrap** | `normal` / `Bayes` / `wild` + joint CI | ✅ |
-| Hyperparameter tuning | — | ⏳ planned |
+| **Hyperparameter tuning** | grid / random search via `tune!` | ✅ |
 
 ## Built-in learners
 
@@ -140,6 +140,7 @@ DoubleML/
 │   ├── irm.jl
 │   ├── pliv.jl          # partially linear IV
 │   ├── iivm.jl          # interactive IV (LATE)
+│   ├── tune.jl          # grid / random hyperparameter search
 │   └── datasets.jl
 ├── test/runtests.jl
 ├── examples/plr_irm_demo.jl
@@ -171,6 +172,22 @@ DoubleMLIIVM(data, ml_g, ml_m, ml_r)  # E[Y|X,Z], E[Z|X], E[D|X,Z]
 fit!(dml)
 bootstrap!(dml; method="normal", n_rep_boot=500)  # also "Bayes", "wild"
 confint(dml; joint=true)
+```
+
+**Hyperparameter tuning** (Python `tune` analogue):
+
+```julia
+dml = DoubleMLPLR(data, RidgeLearner(α=1.0), RidgeLearner(α=1.0); n_folds=5)
+tune!(dml; param_grids=Dict(
+    :ml_l => Dict(:α => [0.01, 0.1, 1.0, 10.0]),
+    :ml_m => Dict(:α => [0.01, 0.1, 1.0, 10.0]),
+), n_folds_tune=5, search_mode=:grid)   # or :random with n_iter=...
+fit!(dml)
+summary_table(dml)
+
+# Also works for IRM / PLIV / IIVM with the corresponding learner keys.
+# Low-level: tune a single learner
+best, res = tune_learner(RidgeLearner(), X, y, Dict(:α => [0.1, 1.0, 10.0]))
 ```
 
 ## Run tests

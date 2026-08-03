@@ -79,4 +79,18 @@ bootstrap!(plr; method="normal", n_rep_boot=300, rng=MersenneTwister(9))
 println("\n## Bootstrap joint CI (PLR)")
 println(confint(plr; joint=true))
 
+# ---------- Hyperparameter tuning ----------
+data_t = make_plr_data(n_obs=600, dim_x=10, theta=θ; seed=101)
+dml_t = DoubleMLPLR(data_t, RidgeLearner(α=50.0), RidgeLearner(α=50.0);
+                    n_folds=5, rng=MersenneTwister(101))
+tres = tune!(dml_t; param_grids=Dict(
+    :ml_l => Dict(:α => [0.01, 0.1, 1.0, 10.0, 50.0]),
+    :ml_m => Dict(:α => [0.01, 0.1, 1.0, 10.0, 50.0]),
+), n_folds_tune=4, rng=MersenneTwister(102))
+fit!(dml_t)
+println("\n## PLR after tune!")
+println("tuned ml_l: ", tres[:ml_l])
+println("tuned ml_m: ", tres[:ml_m])
+println(summary_table(dml_t))
+
 println("\nDone.")

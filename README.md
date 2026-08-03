@@ -115,9 +115,11 @@ model.confint()                →    confint(model)
 | **PLPR** | Partially linear panel regression (`fd_exact` first-difference) | ✅ |
 | **SSM** | Sample selection (`missing-at-random` / basic `nonignorable`) | ✅ |
 | **RDD** | Sharp/fuzzy RD with ML residualization + local linear | ✅ |
-| **Cluster SE** | One-way cluster-robust SE (`cluster_se` / `apply_cluster_se!`) | ✅ |
+| **Cluster SE** | One-way post-hoc + **cluster-in-fit** (1/2-way) for PLR/IRM | ✅ |
 | **Multiple testing** | `p_adjust` Holm / Bonferroni / Romano–Wolf | ✅ |
 | **IRM weights** | Observation weights for IRM ATE/ATTE | ✅ |
+| **Framework** | `construct_framework` / `concat` / `+` `-` `*` joint IF algebra | ✅ |
+| **Multi-treatment** | `d_cols` multi-column D for PLR/IRM (`use_other_treat_as_covariate`) | ✅ |
 
 ## Built-in learners
 
@@ -154,6 +156,7 @@ DoubleML/
 │   ├── data.jl          # DoubleMLData
 │   ├── sample_splitting.jl
 │   ├── base.jl          # coef aggregation, SE, confint, summary
+│   ├── framework.jl     # DoubleMLFramework / concat / algebra
 │   ├── plr.jl
 │   ├── irm.jl
 │   ├── pliv.jl          # partially linear IV
@@ -174,7 +177,7 @@ DoubleML/
 │   ├── plpr.jl          # panel PLR (first-difference)
 │   ├── ssm.jl           # sample selection
 │   ├── rdd.jl           # regression discontinuity
-│   ├── cluster.jl       # one-way cluster SE
+│   ├── cluster.jl       # cluster SE + var_est
 │   └── datasets.jl
 ├── test/runtests.jl
 ├── examples/plr_irm_demo.jl

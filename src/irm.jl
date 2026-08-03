@@ -4,6 +4,7 @@
 Double machine learning for the **interactive regression model** (binary treatment).
 
 Default score is the **doubly robust ATE** score (Python `"ATE"`).
+Supports multiple binary treatment columns and cluster-in-fit SE.
 Mirrors Python `doubleml.DoubleMLIRM`.
 """
 mutable struct DoubleMLIRM <: AbstractDoubleML
@@ -16,6 +17,11 @@ mutable struct DoubleMLIRM <: AbstractDoubleML
     trimming_threshold::Float64
     weights::Union{Nothing,Vector{Float64}}
     smpls::Vector
+    smpls_cluster::Union{Nothing,Vector}
+    n_folds_per_cluster::Int
+    var_scaling::Union{Nothing,Vector{Float64}}
+    is_cluster_data::Bool
+    cluster_dict::Union{Nothing,NamedTuple}
     coef::Vector{Float64}
     se::Vector{Float64}
     all_coef::Matrix{Float64}
@@ -41,9 +47,13 @@ function DoubleMLIRM(data::DoubleMLData, ml_g, ml_m;
                      rng::AbstractRNG=Random.default_rng())
     score in ("ATE", "ATTE") ||
         throw(ArgumentError("score must be \"ATE\" or \"ATTE\""))
-    Set(unique(data.d)) ⊆ Set([0.0, 1.0]) ||
-        throw(ArgumentError("DoubleMLIRM requires binary treatment in {0,1}"))
+    for j in 1:n_treat(data)
+        dj = @view data.d_mat[:, j]
+        Set(unique(dj)) ⊆ Set([0.0, 1.0]) ||
+            throw(ArgumentError("DoubleMLIRM requires binary treatment in {0,1} (column $(data.d_cols[j]))"))
+    end
     n = n_obs(data)
+    n_t = n_treat(data)
     w = if weights === nothing
         nothing
     else
@@ -51,24 +61,25 @@ function DoubleMLIRM(data::DoubleMLData, ml_g, ml_m;
         Float64.(weights)
     end
 
-    smpls = draw_sample_splitting ?
-        make_repeated_folds(n, n_folds, n_rep; rng=rng) :
-        Vector{Any}()
+    is_cl = is_cluster_data(data)
+    smpls, smpls_cluster, n_fpc = if draw_sample_splitting
+        init_sample_splitting(data, n_folds, n_rep; rng=rng)
+    else
+        Vector{Any}(), nothing, n_folds
+    end
 
     return DoubleMLIRM(
         data, ml_g, ml_m, n_folds, n_rep, String(score),
         Float64(trimming_threshold), w, smpls,
+        smpls_cluster, n_fpc, nothing, is_cl, nothing,
         Float64[], Float64[],
-        zeros(1, n_rep), zeros(1, n_rep),
-        fill(NaN, n, n_rep, 1),
-        fill(NaN, n, n_rep, 1),
+        zeros(n_t, n_rep), zeros(n_t, n_rep),
+        fill(NaN, n, n_rep, n_t),
+        fill(NaN, n, n_rep, n_t),
         Dict{String,Matrix{Float64}}(),
-        [data.d_col],
-        nothing,
-        nothing,
-        nothing,
-        false,
-        rng,
+        copy(data.d_cols),
+        nothing, nothing, nothing,
+        false, rng,
     )
 end
 
@@ -92,19 +103,26 @@ end
 
 function fit!(m::DoubleMLIRM; store_predictions::Bool=true)
     data = m.data
-    X, y, d = data.x, data.y, data.d
+    y = data.y
     n = n_obs(data)
     n_rep = m.n_rep
+    n_t = n_treat(data)
     ε = m.trimming_threshold
+    is_cl = is_cluster_data(data)
 
     if isempty(m.smpls)
-        m.smpls = make_repeated_folds(n, m.n_folds, n_rep; rng=m.rng)
+        smpls, smpls_cluster, n_fpc = init_sample_splitting(data, m.n_folds, n_rep; rng=m.rng)
+        m.smpls = smpls
+        m.smpls_cluster = smpls_cluster
+        m.n_folds_per_cluster = n_fpc
+        m.is_cluster_data = is_cl
     end
 
-    all_coef = zeros(1, n_rep)
-    all_se = zeros(1, n_rep)
-    psi_arr = fill(NaN, n, n_rep, 1)
-    psi_d_arr = fill(NaN, n, n_rep, 1)
+    all_coef = zeros(n_t, n_rep)
+    all_se = zeros(n_t, n_rep)
+    psi_arr = fill(NaN, n, n_rep, n_t)
+    psi_d_arr = fill(NaN, n, n_rep, n_t)
+    var_scaling = fill(Float64(n), n_t)
 
     g0_preds = fill(NaN, n, n_rep)
     g1_preds = fill(NaN, n, n_rep)
@@ -116,59 +134,79 @@ function fit!(m::DoubleMLIRM; store_predictions::Bool=true)
     psi_n = fill(NaN, n, n_rep)
     rr_m = fill(NaN, n, n_rep)
 
-    for r in 1:n_rep
-        folds = m.smpls[r]
-        g0, g1 = _cross_fit_g_binary(m.ml_g, X, y, d, folds)
-        m̂ = cross_fit_predict(m.ml_m, X, d, folds; classifier=is_classifier(m.ml_m))
-        m̂ = clamp.(m̂, ε, 1 - ε)
+    for j in 1:n_t
+        X, d, _ = design_for_treatment(data, j)
+        d = collect(d)
+        for r in 1:n_rep
+            folds = m.smpls[r]
+            g0, g1 = _cross_fit_g_binary(m.ml_g, X, y, d, folds)
+            m̂ = cross_fit_predict(m.ml_m, X, d, folds; classifier=is_classifier(m.ml_m))
+            m̂ = clamp.(m̂, ε, 1 - ε)
 
-        if m.score == "ATE"
-            dr = (g1 .- g0) .+
-                 d .* (y .- g1) ./ m̂ .-
-                 (1 .- d) .* (y .- g0) ./ (1 .- m̂)
-            psi_a = fill(-1.0, n)
-            psi_b = dr
-        else
-            p = mean(d)
-            dr = d ./ p .* (g1 .- g0) .+
-                 d ./ p .* (y .- g1) .-
-                 m̂ ./ p .* (1 .- d) ./ (1 .- m̂) .* (y .- g0)
-            psi_a = fill(-1.0, n)
-            psi_b = dr
+            if m.score == "ATE"
+                dr = (g1 .- g0) .+
+                     d .* (y .- g1) ./ m̂ .-
+                     (1 .- d) .* (y .- g0) ./ (1 .- m̂)
+                psi_a = fill(-1.0, n)
+                psi_b = dr
+            else
+                p = mean(d)
+                dr = d ./ p .* (g1 .- g0) .+
+                     d ./ p .* (y .- g1) .-
+                     m̂ ./ p .* (1 .- d) ./ (1 .- m̂) .* (y .- g0)
+                psi_a = fill(-1.0, n)
+                psi_b = dr
+            end
+            if m.weights !== nothing
+                w = m.weights ./ mean(m.weights)
+                psi_a = psi_a .* w
+                psi_b = psi_b .* w
+            end
+
+            θ = est_coef_linear(psi_a, psi_b)
+            se, vsf = se_from_score(psi_a, psi_b, θ;
+                                    smpls=folds,
+                                    cluster=is_cl ? data.cluster : nothing,
+                                    smpls_cluster=is_cl ? m.smpls_cluster[r] : nothing,
+                                    n_folds_per_cluster=m.n_folds_per_cluster)
+
+            all_coef[j, r] = θ
+            all_se[j, r] = se
+            psi_arr[:, r, j] = psi_a .* θ .+ psi_b
+            psi_d_arr[:, r, j] = psi_a
+            var_scaling[j] = vsf
+
+            if j == 1
+                g0_preds[:, r] = g0
+                g1_preds[:, r] = g1
+                m_preds[:, r] = m̂
+                σ2, ν2, ps, pn, rr = sensitivity_elements_irm_ate(y, d, g0, g1, m̂)
+                sigma2_v[r] = σ2
+                nu2_v[r] = ν2
+                psi_s[:, r] = ps
+                psi_n[:, r] = pn
+                rr_m[:, r] = rr
+            end
         end
-        # optional observation weights (normalized to mean 1)
-        if m.weights !== nothing
-            w = m.weights ./ mean(m.weights)
-            psi_a = psi_a .* w
-            psi_b = psi_b .* w
-        end
-
-        θ = est_coef_linear(psi_a, psi_b)
-        se = se_linear(psi_a, psi_b, θ)
-        all_coef[1, r] = θ
-        all_se[1, r] = se
-        psi_arr[:, r, 1] = psi_a .* θ .+ psi_b
-        psi_d_arr[:, r, 1] = psi_a
-        g0_preds[:, r] = g0
-        g1_preds[:, r] = g1
-        m_preds[:, r] = m̂
-
-        # sensitivity (ATE formula; used for ATTE as approximation)
-        σ2, ν2, ps, pn, rr = sensitivity_elements_irm_ate(y, d, g0, g1, m̂)
-        sigma2_v[r] = σ2
-        nu2_v[r] = ν2
-        psi_s[:, r] = ps
-        psi_n[:, r] = pn
-        rr_m[:, r] = rr
     end
 
     coef, se = aggregate_reps(all_coef, all_se)
     m.coef = coef; m.se = se
     m.all_coef = all_coef; m.all_se = all_se
     m.psi = psi_arr; m.psi_deriv = psi_d_arr
+    m.var_scaling = var_scaling
+    m.treat_names = copy(data.d_cols)
     m.boot = nothing
     m.sens_elements = SensitivityElements(sigma2_v, nu2_v, psi_s, psi_n, rr_m)
     m.sensitivity = nothing
+    if is_cl
+        m.cluster_dict = (
+            smpls = m.smpls,
+            smpls_cluster = m.smpls_cluster,
+            cluster_vars = data.cluster,
+            n_folds_per_cluster = m.n_folds_per_cluster,
+        )
+    end
     if store_predictions
         m.predictions = Dict("ml_g0" => g0_preds, "ml_g1" => g1_preds, "ml_m" => m_preds)
     end

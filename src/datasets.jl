@@ -29,6 +29,51 @@ function make_plr_data(; n_obs::Int=500, dim_x::Int=20, theta::Real=0.5,
 end
 
 """
+    make_plr_multi_data(; n_obs=800, dim_x=8, theta=[0.5, -0.3], seed=nothing)
+
+PLR DGP with multiple continuous treatments. True slopes ≈ `theta`.
+"""
+function make_plr_multi_data(; n_obs::Int=800, dim_x::Int=8,
+                             theta::AbstractVector=[0.5, -0.3],
+                             seed=nothing)
+    rng = seed === nothing ? Random.default_rng() : MersenneTwister(seed)
+    n_t = length(theta)
+    n_t >= 1 || throw(ArgumentError("theta non-empty"))
+    dim_x >= 2 || throw(ArgumentError("dim_x ≥ 2"))
+    X = randn(rng, n_obs, dim_x)
+    b = X[:, 1] .+ 0.25 .* (X[:, 2] .^ 2)
+    D = zeros(n_obs, n_t)
+    for j in 1:n_t
+        D[:, j] = 0.4 .* X[:, min(j, dim_x)] .+ randn(rng, n_obs)
+    end
+    y = D * Float64.(theta) .+ b .+ randn(rng, n_obs)
+    return DoubleMLData(X, y, D; y_col="y", d_cols=["d$j" for j in 1:n_t])
+end
+
+"""
+    make_plr_cluster_data(; n_obs=600, n_clusters=40, dim_x=5, theta=0.5, seed=nothing)
+
+One-way clustered PLR DGP (shared cluster random effect).
+"""
+function make_plr_cluster_data(; n_obs::Int=600, n_clusters::Int=40, dim_x::Int=5,
+                               theta::Real=0.5, seed=nothing)
+    rng = seed === nothing ? Random.default_rng() : MersenneTwister(seed)
+    n_clusters >= 4 || throw(ArgumentError("n_clusters ≥ 4"))
+    cluster = repeat(1:n_clusters, inner=n_obs ÷ n_clusters)
+    # pad if needed
+    while length(cluster) < n_obs
+        push!(cluster, n_clusters)
+    end
+    cluster = cluster[1:n_obs]
+    X = randn(rng, n_obs, dim_x)
+    α = randn(rng, n_clusters)
+    a = α[cluster]
+    d = 0.5 .* X[:, 1] .+ 0.3 .* a .+ randn(rng, n_obs)
+    y = theta .* d .+ X[:, 1] .+ a .+ randn(rng, n_obs)
+    return DoubleMLData(X, y, d; y_col="y", d_col="d", cluster=cluster, cluster_cols="cluster")
+end
+
+"""
     make_irm_data(; n_obs=500, dim_x=20, theta=0.5, seed=nothing) -> DoubleMLData
 
 Synthetic IRM data with binary treatment and constant ATE `theta`.

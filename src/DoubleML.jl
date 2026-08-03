@@ -99,6 +99,16 @@ export
     set_sample_splitting!,
     cluster_se,
     apply_cluster_se!,
+    # framework
+    DoubleMLCore,
+    DoubleMLFramework,
+    construct_framework,
+    framework,
+    concat,
+    n_treat,
+    design_for_treatment,
+    is_cluster_data,
+    n_cluster_vars,
     # tuning
     tune!,
     tune_learner,
@@ -124,6 +134,8 @@ export
     print_policy_tree,
     # datasets
     make_plr_data,
+    make_plr_multi_data,
+    make_plr_cluster_data,
     make_irm_data,
     make_pliv_data,
     make_iivm_data,
@@ -140,7 +152,8 @@ include("data.jl")
 include("sample_splitting.jl")
 include("base.jl")       # AbstractDoubleML, confint, summary_table, p_adjust
 include("bootstrap.jl")  # BootstrapResult, bootstrap! (needs AbstractDoubleML)
-include("cluster.jl")    # one-way cluster SE
+include("framework.jl")  # DoubleMLFramework / concat / algebra
+include("cluster.jl")    # cluster SE + var_est
 include("sensitivity.jl")
 include("plr.jl")
 include("irm.jl")

@@ -867,4 +867,78 @@ using Statistics
         fit!(irm)
         @test irm.fitted
     end
+
+    @testset "Framework construct / algebra / concat" begin
+        d1 = make_plr_data(n_obs=500, dim_x=5, theta=0.5; seed=801)
+        d2 = make_plr_data(n_obs=500, dim_x=5, theta=1.0; seed=802)
+        m1 = DoubleMLPLR(d1, RidgeLearner(α=1.0), RidgeLearner(α=1.0); n_folds=3, rng=MersenneTwister(801))
+        m2 = DoubleMLPLR(d2, RidgeLearner(α=1.0), RidgeLearner(α=1.0); n_folds=3, rng=MersenneTwister(802))
+        fit!(m1); fit!(m2)
+        f1 = construct_framework(m1)
+        f2 = construct_framework(m2)
+        @test f1.thetas[1] ≈ m1.coef[1]
+        @test f1.ses[1] ≈ m1.se[1]
+        st = summary_table(f1)
+        @test st.coef[1] ≈ m1.coef[1]
+
+        fsum = f1 + f1
+        @test fsum.thetas[1] ≈ 2 * f1.thetas[1]
+        fdiff = f2 - f1
+        @test isfinite(fdiff.thetas[1]) && fdiff.ses[1] > 0
+        fsc = 2 * f1
+        @test fsc.thetas[1] ≈ 2 * f1.thetas[1]
+        @test fsc.ses[1] ≈ 2 * f1.ses[1]
+
+        fc = concat([f1, f2])
+        @test length(fc.thetas) == 2
+        @test fc.thetas[1] ≈ f1.thetas[1]
+        @test fc.thetas[2] ≈ f2.thetas[1]
+        bootstrap!(fc; n_rep_boot=50, rng=MersenneTwister(803))
+        cij = confint(fc; joint=true)
+        @test nrow(cij) == 2
+        padj = p_adjust(fc; method=:holm)
+        @test nrow(padj) == 2
+    end
+
+    @testset "Multi-treatment PLR" begin
+        θ_true = [0.5, -0.3]
+        data = make_plr_multi_data(n_obs=1000, dim_x=6, theta=θ_true; seed=811)
+        @test n_treat(data) == 2
+        @test data.d_cols == ["d1", "d2"]
+        plr = DoubleMLPLR(data, RidgeLearner(α=0.5), RidgeLearner(α=0.5);
+                          n_folds=3, rng=MersenneTwister(811))
+        fit!(plr)
+        @test length(plr.coef) == 2
+        @test abs(plr.coef[1] - θ_true[1]) < 0.2
+        @test abs(plr.coef[2] - θ_true[2]) < 0.2
+        @test all(plr.se .> 0)
+        f = construct_framework(plr)
+        @test length(f.thetas) == 2
+        @test f.treatment_names == ["d1", "d2"]
+    end
+
+    @testset "Cluster-in-fit PLR" begin
+        data = make_plr_cluster_data(n_obs=600, n_clusters=40, dim_x=4, theta=0.5; seed=821)
+        @test is_cluster_data(data)
+        plr = DoubleMLPLR(data, RidgeLearner(α=0.5), RidgeLearner(α=0.5);
+                          n_folds=3, rng=MersenneTwister(821))
+        fit!(plr)
+        @test isfinite(plr.coef[1])
+        @test abs(plr.coef[1] - 0.5) < 0.35
+        @test plr.se[1] > 0
+        @test plr.is_cluster_data
+        @test plr.var_scaling !== nothing
+        # cluster folds: no cluster id in both train and test
+        folds = plr.smpls[1]
+        cl = data.cluster[:, 1]
+        for f in folds
+            tr_c = Set(cl[f.train])
+            te_c = Set(cl[f.test])
+            @test isempty(intersect(tr_c, te_c))
+        end
+        f = construct_framework(plr)
+        @test f.core.is_cluster_data
+        bootstrap!(f; n_rep_boot=30, rng=MersenneTwister(822))
+        @test confint(f; joint=false).lower[1] < plr.coef[1]
+    end
 end

@@ -147,4 +147,36 @@ qte = DoubleMLQTE(
 fit!(qte)
 println(summary_table(qte))
 
+println("\n## CVaR (treatment=1, τ=0.5) and CVaR-TE")
+cvar = DoubleMLCVAR(
+    data_irm, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+    treatment=1, quantile=0.5, n_folds=3,
+    trimming_threshold=0.05, rng=MersenneTwister(13),
+)
+fit!(cvar)
+println(summary_table(cvar))
+cte = DoubleMLQTE(
+    data_irm, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+    quantiles=[0.5], score="CVaR", n_folds=3,
+    trimming_threshold=0.05, rng=MersenneTwister(14),
+)
+fit!(cte)
+println(summary_table(cte))
+
+println("\n## LPQ / LQTE (IIVM data with instrument Z)")
+lpq = DoubleMLLPQ(
+    data_iivm, LogisticRegressionLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+    treatment=1, quantile=0.5, n_folds=3,
+    trimming_threshold=0.05, rng=MersenneTwister(15),
+)
+fit!(lpq)
+println(summary_table(lpq))
+lqte = DoubleMLQTE(
+    data_iivm, LogisticRegressionLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+    quantiles=[0.5], score="LPQ", n_folds=3,
+    trimming_threshold=0.05, rng=MersenneTwister(16),
+)
+fit!(lqte)
+println(summary_table(lqte))
+
 println("\nDone.")

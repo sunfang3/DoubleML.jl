@@ -104,7 +104,9 @@ model.confint()                →    confint(model)
 | **Sensitivity analysis** | OVB bounds (cf_y, cf_d, rho), RV / RVa (PLR, IRM) | ✅ |
 | **GATE / CATE** | Best linear predictor (`gate` / `cate` → `DoubleMLBLP`) for PLR & IRM | ✅ |
 | **Policy tree** | Weighted classification of IRM score (`policy_tree` → `DoubleMLPolicyTree`) | ✅ |
-| **PQ / QTE** | Potential quantiles & quantile treatment effects (nonlinear DML) | ✅ |
+| **PQ / QTE** | Potential quantiles & QTE (`score="PQ"`) | ✅ |
+| **LPQ / LQTE** | Local (complier) potential quantiles (`score="LPQ"`, needs Z) | ✅ |
+| **CVaR / CVaR-TE** | Conditional value at risk of potential outcomes (`score="CVaR"`) | ✅ |
 
 ## Built-in learners
 
@@ -149,7 +151,9 @@ DoubleML/
 │   ├── blp.jl           # BLP / CATE / GATE
 │   ├── policy_tree.jl   # optimal treatment policy trees (IRM)
 │   ├── pq.jl            # potential quantiles (nonlinear DML)
-│   ├── qte.jl           # quantile treatment effects
+│   ├── lpq.jl           # local potential quantiles (IV)
+│   ├── cvar.jl          # CVaR of potential outcomes
+│   ├── qte.jl           # QTE / LQTE / CVaR-TE
 │   └── datasets.jl
 ├── test/runtests.jl
 ├── examples/plr_irm_demo.jl
@@ -241,29 +245,28 @@ print_policy_tree(pt)
 policy_value(pt)                         # (1/n) Σ (2π−1) ψ̂_b
 ```
 
-**Potential quantiles & QTE** (nonlinear DML; binary treatment):
+**Distributional effects** (PQ / LPQ / CVaR and their treatment-effect wrappers):
 
 ```julia
-# Potential quantile of Y(1) at τ=0.5
-pq = DoubleMLPQ(
-    data_irm,
-    LogisticRegressionLearner(α=0.5),
-    LogisticRegressionLearner(α=0.5);
-    treatment=1, quantile=0.5, n_folds=5, trimming_threshold=0.05,
-)
+# Potential quantile of Y(1) at τ=0.5  (IRM)
+pq = DoubleMLPQ(data_irm, clf_g, clf_m; treatment=1, quantile=0.5)
 fit!(pq)
-summary_table(pq)
 
-# Quantile treatment effects QTE(τ) = θ_τ(1) − θ_τ(0)
-qte = DoubleMLQTE(
-    data_irm,
-    LogisticRegressionLearner(α=0.5),
-    LogisticRegressionLearner(α=0.5);
-    quantiles=[0.25, 0.5, 0.75], n_folds=5, trimming_threshold=0.05,
-)
-fit!(qte)
+# CVaR of Y(1)  (ml_g = regressor)
+cvar = DoubleMLCVAR(data_irm, RidgeLearner(α=0.5), clf_m; treatment=1, quantile=0.5)
+fit!(cvar)
+
+# Local potential quantile for compliers  (needs instrument Z)
+lpq = DoubleMLLPQ(data_iivm, clf_g, clf_m; treatment=1, quantile=0.5)
+fit!(lpq)
+
+# Treatment effects via DoubleMLQTE
+qte  = DoubleMLQTE(data_irm,  clf_g, clf_m; quantiles=[0.25,0.5,0.75], score="PQ")
+lqte = DoubleMLQTE(data_iivm, clf_g, clf_m; quantiles=[0.5], score="LPQ")
+cte  = DoubleMLQTE(data_irm,  RidgeLearner(α=0.5), clf_m; quantiles=[0.5], score="CVaR")
+fit!(qte); fit!(lqte); fit!(cte)
 summary_table(qte)
-# underlying PQ models: qte.modellist_0 / qte.modellist_1
+# underlying models: *.modellist_0 / *.modellist_1
 ```
 
 ## Run tests

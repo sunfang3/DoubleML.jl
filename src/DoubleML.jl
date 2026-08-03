@@ -10,7 +10,9 @@ API-aligned with the Python package [DoubleML](https://docs.doubleml.org/).
 - [`DoubleMLPLIV`](@ref) — partially linear IV (`:partialX` / `:partialZ` / `:partialXZ`)
 - [`DoubleMLIIVM`](@ref) — interactive IV model (binary D, binary Z → LATE)
 - [`DoubleMLPQ`](@ref) — potential quantiles (binary treatment)
-- [`DoubleMLQTE`](@ref) — quantile treatment effects
+- [`DoubleMLLPQ`](@ref) — local potential quantiles (IV / compliers)
+- [`DoubleMLCVAR`](@ref) — CVaR of potential outcomes
+- [`DoubleMLQTE`](@ref) — QTE / LQTE / CVaR-TE (`score="PQ"|"LPQ"|"CVaR"`)
 
 # Inference
 - Pointwise: `confint(m)`
@@ -61,6 +63,8 @@ export
     DoubleMLPLIV_partialXZ,
     DoubleMLIIVM,
     DoubleMLPQ,
+    DoubleMLLPQ,
+    DoubleMLCVAR,
     DoubleMLQTE,
     confint,
     summary_table,
@@ -109,7 +113,9 @@ include("iivm.jl")
 include("blp.jl")        # BLP / cate / gate (needs PLR & IRM)
 include("policy_tree.jl")  # policy learning (needs IRM + orth signal)
 include("pq.jl")         # potential quantiles (nonlinear DML)
-include("qte.jl")        # quantile treatment effects
+include("lpq.jl")        # local potential quantiles (IV)
+include("cvar.jl")       # CVaR of potential outcomes
+include("qte.jl")        # QTE / LQTE / CVaR-TE
 include("tune.jl")
 include("datasets.jl")
 

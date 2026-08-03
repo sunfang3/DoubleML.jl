@@ -534,4 +534,87 @@ using Statistics
         @test length(qte2.modellist_0) == 3
         @test length(qte2.modellist_1) == 3
     end
+
+    @testset "CVaR potential outcome" begin
+        data = make_irm_data(n_obs=1500, dim_x=4, theta=0.5; seed=401)
+        c1 = DoubleMLCVAR(
+            data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            treatment=1, quantile=0.5, n_folds=3,
+            trimming_threshold=0.05, rng=MersenneTwister(401),
+        )
+        fit!(c1)
+        @test c1.fitted
+        @test isfinite(c1.coef[1])
+        @test c1.se[1] > 0
+        # CVaR ≥ PQ roughly for same τ (upper-tail mean)
+        pq1 = DoubleMLPQ(
+            data, LogisticRegressionLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            treatment=1, quantile=0.5, n_folds=3,
+            trimming_threshold=0.05, rng=MersenneTwister(402),
+        )
+        fit!(pq1)
+        @test c1.coef[1] >= pq1.coef[1] - 0.5  # soft: estimation noise
+        st = summary_table(c1)
+        @test nrow(st) == 1
+    end
+
+    @testset "CVaR-TE via QTE score" begin
+        data = make_irm_data(n_obs=1500, dim_x=4, theta=0.5; seed=411)
+        qte = DoubleMLQTE(
+            data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            quantiles=[0.5], score="CVaR", n_folds=3,
+            trimming_threshold=0.05, rng=MersenneTwister(411),
+        )
+        fit!(qte)
+        @test qte.score == "CVaR"
+        @test isfinite(qte.coef[1])
+        @test qte.se[1] > 0
+        @test qte.modellist_0[1] isa DoubleMLCVAR
+        # location-shift DGP → CVaR-TE also near θ
+        @test abs(qte.coef[1] - 0.5) < 0.55
+    end
+
+    @testset "LPQ local potential quantile" begin
+        data = make_iivm_data(n_obs=2500, dim_x=4, theta=0.5; seed=421)
+        lpq = DoubleMLLPQ(
+            data, LogisticRegressionLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            treatment=1, quantile=0.5, n_folds=3,
+            trimming_threshold=0.05, rng=MersenneTwister(421),
+        )
+        fit!(lpq)
+        @test lpq.fitted
+        @test isfinite(lpq.coef[1])
+        @test lpq.se[1] > 0
+        @test minimum(data.y) <= lpq.coef[1] <= maximum(data.y)
+        st = summary_table(lpq)
+        @test nrow(st) == 1
+    end
+
+    @testset "LQTE via QTE score=LPQ" begin
+        data = make_iivm_data(n_obs=2500, dim_x=4, theta=0.5; seed=431)
+        qte = DoubleMLQTE(
+            data, LogisticRegressionLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            quantiles=[0.5], score="LPQ", n_folds=3,
+            trimming_threshold=0.05, rng=MersenneTwister(431),
+        )
+        fit!(qte)
+        @test qte.score == "LPQ"
+        @test isfinite(qte.coef[1])
+        @test qte.se[1] > 0
+        @test qte.modellist_0[1] isa DoubleMLLPQ
+        # additive LATE-style shift → rough recovery
+        @test abs(qte.coef[1] - 0.5) < 0.7
+    end
+
+    @testset "QTE score validation" begin
+        data = make_irm_data(n_obs=200, dim_x=3, theta=0.5; seed=441)
+        @test_throws ArgumentError DoubleMLQTE(
+            data, LogisticRegressionLearner(), LogisticRegressionLearner();
+            score="LPQ",  # no instrument
+        )
+        @test_throws ArgumentError DoubleMLQTE(
+            data, LogisticRegressionLearner(), LogisticRegressionLearner();
+            score="FOO",
+        )
+    end
 end

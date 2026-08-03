@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
+
 OUT = Path(__file__).resolve().parent / "data"
 REP = Path(__file__).resolve().parent / "BENCHMARK_REPORT.md"
 
@@ -126,12 +128,26 @@ def main():
     if jl_tot > 0:
         lines.append(f"- Overall speedup (Py/Jl total): **{py_tot/jl_tot:.2f}×**\n")
 
+    # sensitivity special section
+    if "PLR_sensitivity" in py_m and "PLR_sensitivity" in jl_m:
+        p = py_m["PLR_sensitivity"]
+        j = jl_m["PLR_sensitivity"]
+        lines.append("\n## Sensitivity bounds (PLR, cf_y=0.04, cf_d=0.03)\n\n")
+        lines.append("| quantity | Python | Julia | |Δ| |\n")
+        lines.append("|----------|-------:|------:|----:|\n")
+        for k in ("theta_lower", "theta_upper", "ci_lower", "ci_upper", "rv", "rva"):
+            if k in p and k in j:
+                pv = float(np.asarray(p[k]).reshape(-1)[0])
+                jv = float(np.asarray(j[k]).reshape(-1)[0])
+                lines.append(f"| {k} | {pv:.6g} | {jv:.6g} | {abs(pv-jv):.2e} |\n")
+
     lines.append("\n## Notes\n\n")
     lines.append("- **Linear models (PLR/PLIV/multi/PLPR/Framework)**: expect near bit-level agreement with shared folds + OLS.\n")
-    lines.append("- **IRM/IIVM/DID**: small gaps from logistic solver differences.\n")
+    lines.append("- **IRM/IIVM/DID/SSM**: small gaps from logistic solver / nested CF RNG differences.\n")
+    lines.append("- **SSM nonignorable**: nested half-splits use stratified shuffle; Julia RNG ≠ sklearn `random_state=42` unless aligned — expect larger gaps than MAR.\n")
     lines.append("- **RDFlex**: Python uses `rdrobust` final stage; Julia uses weighted local linear + residual ROT — coef may differ more than linear DML.\n")
-    lines.append("- **DID multi**: panel DGP/column schema may force Julia fallback DGP if Python CSV schema differs; compare cautiously.\n")
-    lines.append("- Timings are single-run wall clock (I/O excluded after data load); not a rigorous microbenchmark.\n")
+    lines.append("- **DID multi**: never-treated coding (0 vs +inf) and CS internals may differ per-cell ATTs.\n")
+    lines.append("- Timings are single-run wall clock; Julia first fits include JIT compile cost.\n")
 
     lines.append("\n## Reproduce\n\n```bash\n")
     lines.append("python3 benchmarks/compare_py_jl/run_benchmark_python.py\n")

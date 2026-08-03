@@ -49,7 +49,7 @@ end
 function main()
     results = Dict{String,Any}(
         "backend" => "julia",
-        "doubleml" => "1.2.0",
+        "doubleml" => "1.4.0",
         "seed" => 3141,
         "n_folds" => N_FOLDS,
         "models" => Dict{String,Any}(),
@@ -74,6 +74,22 @@ function main()
         "se" => collect(f2.ses),
         "seconds" => 0.0,
         "theta_true" => 1.0,
+    )
+    sensitivity_analysis!(m; cf_y=0.04, cf_d=0.03, rho=1.0, level=0.95, null_hypothesis=0.0)
+    r = m.sensitivity
+    models["PLR_sensitivity"] = Dict(
+        "coef" => collect(m.coef),
+        "se" => collect(m.se),
+        "theta_lower" => collect(r.theta_lower),
+        "theta_upper" => collect(r.theta_upper),
+        "ci_lower" => collect(r.ci_lower),
+        "ci_upper" => collect(r.ci_upper),
+        "rv" => collect(r.rv),
+        "rva" => collect(r.rva),
+        "seconds" => 0.0,
+        "cf_y" => 0.04,
+        "cf_d" => 0.03,
+        "rho" => 1.0,
     )
 
     # IRM
@@ -215,6 +231,43 @@ function main()
         models["RDFlex"] = pack(m, sec; extra=Dict("n_iterations" => 2, "h_used" => m.h_used))
     catch e
         models["RDFlex"] = Dict("error" => string(e), "seconds" => nothing)
+    end
+
+    # SSM MAR
+    try
+        df = CSV.read(joinpath(OUT, "bench_ssm_mar.csv"), DataFrame)
+        data = DoubleMLData(df; y_col="y", d_cols="d", s_col="s")
+        smpls = load_smpls(joinpath(OUT, "bench_ssm_mar_smpls.json"))
+        m, sec = timed() do
+            ssm = DoubleMLSSM(data, ols(), logit(), logit(); n_folds=N_FOLDS, n_rep=1,
+                              draw_sample_splitting=false, score="missing-at-random",
+                              trimming_threshold=0.05)
+            set_sample_splitting!(ssm, smpls)
+            fit!(ssm)
+            ssm
+        end
+        models["SSM_MAR"] = pack(m, sec; theta_true=1.0)
+    catch e
+        models["SSM_MAR"] = Dict("error" => string(e), "seconds" => nothing)
+    end
+
+    # SSM nonignorable
+    try
+        df = CSV.read(joinpath(OUT, "bench_ssm_ni.csv"), DataFrame)
+        zcols = [c for c in names(df) if startswith(lowercase(String(c)), "z")]
+        data = DoubleMLData(df; y_col="y", d_cols="d", s_col="s", z_cols=zcols)
+        smpls = load_smpls(joinpath(OUT, "bench_ssm_ni_smpls.json"))
+        m, sec = timed() do
+            ssm = DoubleMLSSM(data, ols(), logit(), logit(); n_folds=N_FOLDS, n_rep=1,
+                              draw_sample_splitting=false, score="nonignorable",
+                              trimming_threshold=0.05, rng=MersenneTwister(3141 + 10))
+            set_sample_splitting!(ssm, smpls)
+            fit!(ssm)
+            ssm
+        end
+        models["SSM_nonignorable"] = pack(m, sec; theta_true=1.0)
+    catch e
+        models["SSM_nonignorable"] = Dict("error" => string(e), "seconds" => nothing)
     end
 
     out = joinpath(OUT, "benchmark_jl.json")

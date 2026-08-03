@@ -13,7 +13,7 @@ import doubleml as dml
 import numpy as np
 import pandas as pd
 from doubleml.did.datasets import make_did_CS2021, make_did_SZ2020
-from doubleml.irm.datasets import make_iivm_data, make_irm_data
+from doubleml.irm.datasets import make_iivm_data, make_irm_data, make_ssm_data
 from doubleml.plm.datasets import make_pliv_CHS2015, make_plpr_CP2025, make_plr_CCDDHNR2018
 from doubleml.rdd.datasets import make_simple_rdd_data
 from sklearn.linear_model import LinearRegression, LogisticRegression
@@ -95,6 +95,23 @@ def main():
         "seconds": 0.0,
         "theta_true": 1.0,
         "note": "2 * construct_framework(PLR)",
+    }
+    # sensitivity on same PLR fit
+    est.sensitivity_analysis(cf_y=0.04, cf_d=0.03, rho=1.0, level=0.95, null_hypothesis=0.0)
+    sp = est.sensitivity_params
+    results["models"]["PLR_sensitivity"] = {
+        "coef": est.coef.tolist(),
+        "se": est.se.tolist(),
+        "theta_lower": np.asarray(sp["theta"]["lower"]).reshape(-1).tolist(),
+        "theta_upper": np.asarray(sp["theta"]["upper"]).reshape(-1).tolist(),
+        "ci_lower": np.asarray(sp["ci"]["lower"]).reshape(-1).tolist(),
+        "ci_upper": np.asarray(sp["ci"]["upper"]).reshape(-1).tolist(),
+        "rv": np.asarray(sp["rv"]).reshape(-1).tolist(),
+        "rva": np.asarray(sp["rva"]).reshape(-1).tolist(),
+        "seconds": 0.0,
+        "cf_y": 0.04,
+        "cf_d": 0.03,
+        "rho": 1.0,
     }
 
     # ---- IRM ----
@@ -286,6 +303,55 @@ def main():
         }
     except Exception as e:
         results["models"]["RDFlex"] = {"error": str(e), "seconds": None}
+
+    # ---- SSM MAR ----
+    np.random.seed(SEED + 9)
+    try:
+        df = make_ssm_data(n_obs=1500, dim_x=4, theta=1.0, mar=True, return_type="DataFrame")
+        df.to_csv(OUT / "bench_ssm_mar.csv", index=False)
+        smpls = fixed_smpls(len(df), seed=SEED + 9)
+        save_smpls(OUT / "bench_ssm_mar_smpls.json", smpls)
+        data = dml.DoubleMLSSMData(df, y_col="y", d_cols="d", s_col="s")
+
+        def fit_ssm_mar():
+            m = dml.DoubleMLSSM(
+                data, ols(), logit(), logit(),
+                n_folds=N_FOLDS, draw_sample_splitting=False, score="missing-at-random",
+                trimming_threshold=0.05,
+            )
+            m.set_sample_splitting(smpls)
+            m.fit()
+            return m
+
+        est, sec = timed(fit_ssm_mar)
+        results["models"]["SSM_MAR"] = pack(est, sec, 1.0)
+    except Exception as e:
+        results["models"]["SSM_MAR"] = {"error": str(e), "seconds": None}
+
+    # ---- SSM nonignorable ----
+    np.random.seed(SEED + 10)
+    try:
+        df = make_ssm_data(n_obs=1500, dim_x=4, theta=1.0, mar=False, return_type="DataFrame")
+        df.to_csv(OUT / "bench_ssm_ni.csv", index=False)
+        smpls = fixed_smpls(len(df), seed=SEED + 10)
+        save_smpls(OUT / "bench_ssm_ni_smpls.json", smpls)
+        zcols = [c for c in df.columns if str(c).lower().startswith("z")]
+        data = dml.DoubleMLSSMData(df, y_col="y", d_cols="d", s_col="s", z_cols=zcols)
+
+        def fit_ssm_ni():
+            m = dml.DoubleMLSSM(
+                data, ols(), logit(), logit(),
+                n_folds=N_FOLDS, draw_sample_splitting=False, score="nonignorable",
+                trimming_threshold=0.05,
+            )
+            m.set_sample_splitting(smpls)
+            m.fit()
+            return m
+
+        est, sec = timed(fit_ssm_ni)
+        results["models"]["SSM_nonignorable"] = pack(est, sec, 1.0)
+    except Exception as e:
+        results["models"]["SSM_nonignorable"] = {"error": str(e), "seconds": None}
 
     out = OUT / "benchmark_py.json"
     out.write_text(json.dumps(results, indent=2))

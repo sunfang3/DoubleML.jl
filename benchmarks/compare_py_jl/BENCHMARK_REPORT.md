@@ -1,94 +1,106 @@
-# Algorithm Benchmark: Python DoubleML vs Julia DoubleML.jl
+# Algorithm Benchmark Round 2 — Python DoubleML vs Julia DoubleML.jl
 
 | | |
 |--|--|
-| **Python** | DoubleML `0.11.3` (+ sklearn OLS / LogisticRegression) |
-| **Julia** | DoubleML.jl `1.2.0` (LinearRegressionLearner / LogisticRegressionLearner) |
-| **Protocol** | Shared CSV; shared K-fold where applicable; `n_rep=1` |
+| **Python** | DoubleML `0.11.3` |
+| **Julia** | DoubleML.jl `1.4.0` |
+| **Protocol** | Shared CSV + shared K-fold where possible; OLS / near-unregularized logistic; `n_rep=1` |
 | **Seed** | 3141 |
+| **Date** | 2026-08-03 |
 
-## 1. Core linear DML (shared folds + OLS) — bit-level
+Coverage: **PLR, IRM, PLIV, IIVM, multi-PLR, Framework, PLPR×4, DID, DID multi, RDFlex, SSM MAR, SSM nonignorable, PLR sensitivity bounds**.
+
+---
+
+## 1. Bit-level agreement (shared folds + OLS)
 
 | Model | Py coef | Jl coef | \|Δcoef\| | Py SE | Jl SE |
 |-------|--------:|--------:|----------:|------:|------:|
-| **PLR** | 0.492395 | 0.492395 | **2e-16** | 0.031448 | 0.031448 |
-| **PLIV** | 1.114333 | 1.114333 | **7e-16** | 0.048843 | 0.048843 |
-| **PLR multi d1** | 0.488728 | 0.488728 | **2e-16** | 0.031296 | 0.031296 |
-| **PLR multi d2** | −0.329201 | −0.329201 | **6e-17** | 0.031463 | 0.031463 |
-| **Framework 2×PLR** | 0.984791 | 0.984791 | **3e-16** | 0.062896 | 0.062896 |
+| **PLR** | 0.492395 | 0.492395 | **~1e-16** | 0.031448 | 0.031448 |
+| **PLIV** | 1.114333 | 1.114333 | **~1e-16** | 0.048843 | 0.048843 |
+| **PLR multi** d1 | 0.488728 | 0.488728 | **~1e-16** | 0.031296 | 0.031296 |
+| **PLR multi** d2 | −0.329201 | −0.329201 | **~1e-16** | 0.031463 | 0.031463 |
+| **Framework 2×PLR** | 0.984791 | 0.984791 | **~1e-16** | 0.062896 | 0.062896 |
 
-**Verdict:** residualization + linear score + SE + Framework algebra match at machine precision.
+---
 
-## 2. Propensity-based models — near agreement
+## 2. Sensitivity bounds (same PLR fit, cf_y=0.04, cf_d=0.03)
 
-| Model | Py coef | Jl coef | \|Δcoef\| | rel | true | Py bias | Jl bias |
-|-------|--------:|--------:|----------:|----:|-----:|--------:|--------:|
-| **IRM** | 0.497577 | 0.497578 | **1e-06** | 2e-6 | 0.5 | −0.0024 | −0.0024 |
-| **IIVM** | 0.901260 | 0.901265 | **5e-06** | 6e-6 | 0.5 | +0.40 | +0.40 |
-| **DID** (two-period) | −0.066439 | −0.066460 | **2e-05** | 3e-4 | — | — | — |
+| quantity | Python | Julia | \|Δ\| |
+|----------|-------:|------:|----:|
+| theta_lower | 0.457622 | 0.457622 | **~1e-16** |
+| theta_upper | 0.527168 | 0.527168 | **~1e-16** |
+| ci_lower | 0.405879 | 0.405879 | **~1e-16** |
+| ci_upper | 0.578944 | 0.578944 | **~1e-16** |
+| **rv** | 0.389238 | 0.389238 | **~3e-7** |
+| **rva** | 0.354341 | 0.354340 | **~5e-7** |
 
-**Verdict:** IRM/DID essentially identical; residual gap is logistic solver. IIVM both far from true LATE on this DGP (weak design) but **agree with each other**.
+**Verdict:** OVB sensitivity algebra matches Python at numerical precision (RV/RVa differ only at golden-section search tolerance).
 
-## 3. PLPR approaches (shared DGP; independent folds)
+---
 
-| Approach | Py coef | Jl coef | \|Δ\| | true | both recover? |
-|----------|--------:|--------:|-----:|-----:|:-------------:|
-| **fd_exact** | 0.480 | 0.482 | 0.0015 | 0.5 | ✅ |
-| **wg_approx** | 0.461 | 0.472 | 0.011 | 0.5 | ✅ |
-| **cre_general** | 0.472 | 0.478 | 0.006 | 0.5 | ✅ |
-| **cre_normal** | 0.475 | 0.476 | 0.001 | 0.5 | ✅ |
+## 3. Propensity / classification models
 
-**Verdict:** All four approaches recover θ≈0.5. Small coef gaps expected (no shared sample splits on transformed panel). SE for CRE slightly larger in Julia (fold / SE aggregation differences).
+| Model | Py coef | Jl coef | \|Δcoef\| | true | notes |
+|-------|--------:|--------:|----------:|-----:|-------|
+| **IRM** | 0.497577 | 0.497578 | **1e-6** | 0.5 | excellent |
+| **DID** | −0.066439 | −0.066460 | **2e-5** | — | excellent |
+| **IIVM** | 0.901260 | 0.901265 | **5e-6** | 0.5 | agree; both far from true LATE (weak DGP) |
+| **SSM MAR** | 0.883 | 0.891 | 0.008 | 1.0 | good (~1% rel) |
+| **SSM nonignorable** | 1.073 | 0.970 | 0.10 | 1.0 | larger gap (nested half-split RNG) |
 
-## 4. RDFlex (Python = rdrobust final; Julia = local linear)
+---
 
-| | Py (Conventional) | Julia | \|Δ\| |
-|--|------------------:|------:|----:|
-| coef | 1.372 | 1.393 | 0.021 |
-| SE | 0.416 | 0.403 | 0.013 |
+## 4. PLPR (four approaches, shared DGP)
 
-**Verdict:** Close recovery of a positive RD jump; not bit-level (different final estimator / bandwidth).
+| Approach | Py | Jl | \|Δ\| | recovery of θ=0.5 |
+|----------|---:|---:|----:|:-----------------:|
+| fd_exact | 0.480 | 0.482 | 0.0015 | ✅ |
+| wg_approx | 0.461 | 0.472 | 0.011 | ✅ |
+| cre_general | 0.472 | 0.478 | 0.006 | ✅ |
+| cre_normal | 0.475 | 0.476 | 0.001 | ✅ |
 
-## 5. DID multi (Callaway–Sant’Anna)
+---
 
-Same CS2021-style panel CSV (Julia: never-treated `d=0`; Python float panel: never-treated `d=+inf`).
+## 5. RDFlex & DID multi
 
-| | Python | Julia |
-|--|-------:|------:|
-| n_ATT | 12 | 12 |
-| mean(coef) | ~0.91 | ~0.83 |
-| wall time | 0.63 s | 0.13 s |
+| Model | Python | Julia | \|Δcoef\| |
+|-------|-------:|------:|----------:|
+| **RDFlex** (sharp) | 1.372 | 1.393 | 0.021 (~1.5%) |
+| **DID multi** n_ATT | 12 | 12 | — |
+| DID multi mean(coef) | ~0.91 | ~0.83 | moderate per-cell gaps |
 
-Per-ATT coefs differ more than linear models (implementation details of gt construction, propensity, and never-treated coding). **Both produce 12 group–time ATTs** on the same design.
+RDFlex: Python final stage = `rdrobust`; Julia = local linear + residual ROT.  
+DID multi: same panel design; never-treated coding (0 vs +inf) and CS internals differ.
+
+---
 
 ## 6. Timing (single wall-clock run)
 
-| Model | Python (s) | Julia (s) | note |
-|-------|-----------:|----------:|------|
-| PLR | 0.029 | 1.36 | Julia cold JIT on first fit |
-| IRM | 0.060 | 2.39 | cold / logistic |
-| PLIV | 0.051 | 0.18 | |
-| IIVM | 0.155 | 0.60 | |
-| PLR multi | 0.080 | 0.002 | warm |
-| PLPR (×4 sum) | ~0.18 | ~0.19 | |
-| DID | 0.056 | 0.017 | |
-| DID multi | 0.625 | 0.131 | |
-| RDFlex | 0.45 | 0.61 | |
-| **Total** | **~1.7** | **~5.5** | dominated by Julia JIT on first models |
+| | Python | Julia |
+|--|-------:|------:|
+| **Total** | ~2.4 s | ~9.0 s |
 
-After warmup, Julia OLS models are competitive or faster; first-call compile cost inflates totals.
+Julia totals dominated by **JIT cold start** on first large fits (PLR/IRM). Warm OLS multi/PLPR are often faster than Python.
 
-## 7. Bottom line
+---
+
+## 7. Bottom line (Round 2)
 
 | Area | Agreement |
 |------|-----------|
-| PLR / PLIV / multi / Framework | **Machine precision** |
-| IRM / DID / IIVM (cross-impl) | **~1e-6–1e-5** (solver) |
-| PLPR fd/wg/cre | **Same recovery of θ**; small numeric gaps |
-| RDFlex | **Same order / sign**; ~2% coef gap vs rdrobust |
-| DID multi | **Same n_ATT**; moderate per-cell gaps |
+| Core linear DML + Framework | **Machine precision** |
+| Sensitivity bounds / RV | **Machine precision / ~1e-7** |
+| IRM / DID / IIVM (cross-impl) | **~1e-6–1e-5** |
+| SSM MAR | **~1%** coef gap |
+| SSM nonignorable | **~10%** (nested split RNG; both near truth 1.0) |
+| PLPR ×4 | **Recover θ; small fold gaps** |
+| RDFlex | **~2%** vs rdrobust |
+| DID multi | **Same n_ATT; moderate cell gaps** |
 
-**Overall:** main algorithms are numerically aligned for core DML; remaining differences are expected (logistic, RD final stage, multi DID coding).
+**Overall:** v1.4.0 remains tightly aligned with Python on core estimators and sensitivity; residual gaps are expected (logistic, nested CF RNG, rdrobust vs local linear, DID multi coding).
+
+---
 
 ## Reproduce
 
@@ -97,5 +109,4 @@ python3 benchmarks/compare_py_jl/run_benchmark_python.py
 julia --project=. -e 'using Pkg; Pkg.add(["CSV","JSON"])'
 julia --project=. benchmarks/compare_py_jl/run_benchmark_julia.jl
 python3 benchmarks/compare_py_jl/compare_benchmark.py
-# → benchmarks/compare_py_jl/BENCHMARK_REPORT.md
 ```

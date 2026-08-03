@@ -668,4 +668,62 @@ using Statistics
         fit!(did_e)
         @test isfinite(did_e.coef[1])
     end
+
+    @testset "LPLR logistic PLR" begin
+        data = make_lplr_data(n_obs=1200, dim_x=12, alpha=0.5; seed=601)
+        lplr = DoubleMLLPLR(
+            data,
+            LogisticRegressionLearner(α=0.5),
+            RidgeLearner(α=0.5),
+            RidgeLearner(α=0.5);
+            n_folds=3, score="instrument", rng=MersenneTwister(601),
+        )
+        fit!(lplr)
+        @test isfinite(lplr.coef[1])
+        @test lplr.se[1] > 0
+        # order of magnitude of true alpha
+        @test abs(lplr.coef[1] - 0.5) < 0.6
+    end
+
+    @testset "SSM sample selection MAR" begin
+        data = make_ssm_data(n_obs=1500, dim_x=4, theta=1.0; seed=611)
+        ssm = DoubleMLSSM(
+            data,
+            RidgeLearner(α=0.5),
+            LogisticRegressionLearner(α=0.5),
+            LogisticRegressionLearner(α=0.5);
+            n_folds=3, trimming_threshold=0.05, rng=MersenneTwister(611),
+        )
+        fit!(ssm)
+        @test isfinite(ssm.coef[1])
+        @test abs(ssm.coef[1] - 1.0) < 0.7
+        @test ssm.se[1] > 0
+    end
+
+    @testset "DID multi staggered" begin
+        data = make_did_panel_data(n_id=250, n_t=4, dim_x=3, theta=2.0; seed=621)
+        multi = DoubleMLDIDMulti(
+            data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            n_folds=3, trimming_threshold=0.05, rng=MersenneTwister(621),
+        )
+        fit!(multi)
+        @test multi.fitted
+        @test length(multi.coef) >= 1
+        @test all(isfinite, multi.coef)
+        # average ATT should be near theta
+        @test abs(mean(multi.coef) - 2.0) < 1.2
+    end
+
+    @testset "RDD sharp" begin
+        data = make_rdd_data(n_obs=2500, dim_x=3, tau=1.0, fuzzy=false; seed=631)
+        rdd = DoubleMLRDD(
+            data, RidgeLearner(α=0.5);
+            cutoff=0.0, fuzzy=false, n_folds=3, rng=MersenneTwister(631),
+        )
+        fit!(rdd)
+        @test isfinite(rdd.coef[1])
+        @test abs(rdd.coef[1] - 1.0) < 0.8
+        @test rdd.se[1] > 0
+        @test isfinite(rdd.h_used) && rdd.h_used > 0
+    end
 end

@@ -160,3 +160,94 @@ function make_did_data(; n_obs::Int=500, dim_x::Int=4, theta::Real=-2.0,
     y = y1 .- y0
     return DoubleMLData(X, y, d; y_col="y", d_col="d")
 end
+
+"""
+    make_lplr_data(; n_obs=800, dim_x=15, alpha=0.5, seed=nothing) -> DoubleMLData
+
+Binary outcome logistic PLR DGP (Liu–Zhang–Zhou style). True slope ≈ `alpha`.
+"""
+function make_lplr_data(; n_obs::Int=800, dim_x::Int=15, alpha::Real=0.5, seed=nothing)
+    rng = seed === nothing ? Random.default_rng() : MersenneTwister(seed)
+    dim_x >= 4 || throw(ArgumentError("dim_x ≥ 4"))
+    X = randn(rng, n_obs, dim_x)
+    a0 = 2 ./ (1 .+ exp.(X[:, 1])) .- 2 ./ (1 .+ exp.(X[:, 2])) .+ sin.(X[:, 3]) .+ cos.(X[:, 4])
+    r0 = 0.1 .* X[:, 1] .* X[:, 2] .+ 0.1 .* (dim_x >= 5 ? X[:, 4] .* X[:, 5] : 0.0)
+    d = a0  # continuous treatment
+    p = 1 ./ (1 .+ exp.(-(alpha .* d .+ r0)))
+    y = Float64.(rand(rng, n_obs) .< p)
+    return DoubleMLData(X, y, d; y_col="y", d_col="d")
+end
+
+"""
+    make_ssm_data(; n_obs=1000, dim_x=5, theta=1.0, seed=nothing) -> DoubleMLData
+
+Sample selection MAR DGP. `s` is selection; `y` is observed only when `s=1`
+(unobserved filled with 0 for storage).
+"""
+function make_ssm_data(; n_obs::Int=1000, dim_x::Int=5, theta::Real=1.0, seed=nothing)
+    rng = seed === nothing ? Random.default_rng() : MersenneTwister(seed)
+    X = randn(rng, n_obs, dim_x)
+    p_d = 1 ./ (1 .+ exp.(-0.5 .* X[:, 1]))
+    d = Float64.(rand(rng, n_obs) .< p_d)
+    # selection depends on X, D
+    p_s = 1 ./ (1 .+ exp.(-(0.5 .+ 0.5 .* X[:, 1] .+ 0.3 .* d)))
+    s = Float64.(rand(rng, n_obs) .< p_s)
+    y_star = theta .* d .+ X[:, 1] .+ randn(rng, n_obs)
+    y = ifelse.(s .== 1, y_star, 0.0)
+    return DoubleMLData(X, y, d; y_col="y", d_col="d", s=s, s_col="s")
+end
+
+"""
+    make_did_panel_data(; n_id=200, n_t=4, dim_x=3, theta=2.0, seed=nothing)
+
+Staggered adoption panel (long format). `d` stores first treatment period (0=never).
+"""
+function make_did_panel_data(; n_id::Int=200, n_t::Int=4, dim_x::Int=3,
+                             theta::Real=2.0, seed=nothing)
+    rng = seed === nothing ? Random.default_rng() : MersenneTwister(seed)
+    n_t >= 3 || throw(ArgumentError("n_t ≥ 3"))
+    # assign groups: never, treat at 2, treat at 3, ...
+    groups = [0; collect(2:n_t)]  # never + g=2..n_t
+    id = Int[]; t = Int[]; d = Float64[]; y = Float64[]
+    Xs = Vector{Vector{Float64}}()
+    for i in 1:n_id
+        g = groups[rand(rng, 1:length(groups))]
+        αi = randn(rng)
+        for tt in 1:n_t
+            xit = randn(rng, dim_x)
+            push!(Xs, xit)
+            push!(id, i); push!(t, tt); push!(d, Float64(g))
+            treat_now = (g > 0 && tt >= g) ? 1.0 : 0.0
+            yi = αi + 0.5 * xit[1] + 0.2 * tt + theta * treat_now + randn(rng)
+            push!(y, yi)
+        end
+    end
+    X = reduce(vcat, (r' for r in Xs))
+    return DoubleMLData(X, y, d; y_col="y", d_col="d", id=id, t=t)
+end
+
+"""
+    make_rdd_data(; n_obs=2000, dim_x=3, tau=1.0, fuzzy=false, seed=nothing)
+
+Simple RDD DGP with running variable `score`, cutoff 0, effect `tau`.
+"""
+function make_rdd_data(; n_obs::Int=2000, dim_x::Int=3, tau::Real=1.0,
+                       fuzzy::Bool=false, seed=nothing)
+    rng = seed === nothing ? Random.default_rng() : MersenneTwister(seed)
+    score = randn(rng, n_obs)
+    X = rand(rng, n_obs, dim_x) .* 2 .- 1
+    g0 = 0.1 .* score .^ 2
+    g1 = tau .+ 0.1 .* score .^ 2 .- 0.5 .* score
+    gcov = sum(X; dims=2)[:]
+    Y0 = g0 .+ gcov .+ 0.2 .* randn(rng, n_obs)
+    Y1 = g1 .+ gcov .+ 0.2 .* randn(rng, n_obs)
+    z = Float64.(score .>= 0)
+    if fuzzy
+        p = 0.1 .+ 0.8 .* z
+        d = Float64.(rand(rng, n_obs) .< p)
+    else
+        d = z
+    end
+    y = (1 .- d) .* Y0 .+ d .* Y1
+    return DoubleMLData(X, y, d; y_col="y", d_col="d", score=score)
+end

@@ -15,6 +15,10 @@ API-aligned with the Python package [DoubleML](https://docs.doubleml.org/).
 - [`DoubleMLQTE`](@ref) — QTE / LQTE / CVaR-TE (`score="PQ"|"LPQ"|"CVaR"`)
 - [`DoubleMLAPO`](@ref) / [`DoubleMLAPOS`](@ref) — average potential outcomes
 - [`DoubleMLDID`](@ref) — two-period difference-in-differences ATT
+- [`DoubleMLDIDMulti`](@ref) — staggered group–time ATTs (panel)
+- [`DoubleMLLPLR`](@ref) — logistic partially linear regression
+- [`DoubleMLSSM`](@ref) — sample selection model
+- [`DoubleMLRDD`](@ref) — regression discontinuity (sharp/fuzzy)
 
 # Inference
 - Pointwise: `confint(m)`
@@ -72,6 +76,10 @@ export
     DoubleMLAPOS,
     causal_contrast,
     DoubleMLDID,
+    DoubleMLDIDMulti,
+    DoubleMLLPLR,
+    DoubleMLSSM,
+    DoubleMLRDD,
     confint,
     summary_table,
     dml_summary,
@@ -105,7 +113,11 @@ export
     make_irm_data,
     make_pliv_data,
     make_iivm_data,
-    make_did_data
+    make_did_data,
+    make_lplr_data,
+    make_ssm_data,
+    make_did_panel_data,
+    make_rdd_data
 
 include("learners.jl")
 include("data.jl")
@@ -125,6 +137,10 @@ include("cvar.jl")       # CVaR of potential outcomes
 include("qte.jl")        # QTE / LQTE / CVaR-TE
 include("apo.jl")        # APO / APOS
 include("did.jl")        # two-period DiD
+include("did_multi.jl")  # staggered DiD multi
+include("lplr.jl")       # logistic PLR
+include("ssm.jl")        # sample selection
+include("rdd.jl")        # regression discontinuity
 include("tune.jl")
 include("datasets.jl")
 

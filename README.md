@@ -109,8 +109,13 @@ model.confint()                →    confint(model)
 | **CVaR / CVaR-TE** | Conditional value at risk of potential outcomes (`score="CVaR"`) | ✅ |
 | **APO / APOS** | Average potential outcomes + causal contrasts | ✅ |
 | **DID** | Two-period ATT (`observational` / `experimental`) | ✅ |
+| **DID multi** | Staggered group–time ATTs (panel long format) | ✅ |
+| **LPLR** | Logistic partially linear (binary Y) | ✅ |
+| **SSM** | Sample selection (`missing-at-random` / basic `nonignorable`) | ✅ |
+| **RDD** | Sharp/fuzzy RD with ML residualization + local linear | ✅ |
 
 ## Built-in learners
+
 
 | Learner | Role | Backend |
 |---------|------|---------|
@@ -158,6 +163,10 @@ DoubleML/
 │   ├── qte.jl           # QTE / LQTE / CVaR-TE
 │   ├── apo.jl           # APO / APOS
 │   ├── did.jl           # two-period DiD
+│   ├── did_multi.jl     # staggered DiD multi
+│   ├── lplr.jl          # logistic PLR
+│   ├── ssm.jl           # sample selection
+│   ├── rdd.jl           # regression discontinuity
 │   └── datasets.jl
 ├── test/runtests.jl
 ├── examples/plr_irm_demo.jl

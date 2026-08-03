@@ -16,8 +16,14 @@ struct DoubleMLData
     y_col::String
     d_col::String
     x_cols::Vector{String}
-    z::Union{Nothing,Matrix{Float64}}  # instruments (optional; for PLIV later)
+    z::Union{Nothing,Matrix{Float64}}  # instruments (optional)
     z_cols::Union{Nothing,Vector{String}}
+    s::Union{Nothing,Vector{Float64}}  # selection indicator (SSM)
+    s_col::Union{Nothing,String}
+    # panel / RDD extras stored loosely
+    id::Union{Nothing,Vector{Int}}
+    t::Union{Nothing,Vector{Int}}
+    score::Union{Nothing,Vector{Float64}}  # running variable for RDD
 end
 
 function DoubleMLData(x::AbstractMatrix, y::AbstractVector, d::AbstractVector;
@@ -25,7 +31,12 @@ function DoubleMLData(x::AbstractMatrix, y::AbstractVector, d::AbstractVector;
                       d_col::AbstractString="d",
                       x_cols=nothing,
                       z=nothing,
-                      z_cols=nothing)
+                      z_cols=nothing,
+                      s=nothing,
+                      s_col=nothing,
+                      id=nothing,
+                      t=nothing,
+                      score=nothing)
     n, p = size(x)
     length(y) == n || throw(DimensionMismatch("y length must match n_obs"))
     length(d) == n || throw(DimensionMismatch("d length must match n_obs"))
@@ -33,8 +44,17 @@ function DoubleMLData(x::AbstractMatrix, y::AbstractVector, d::AbstractVector;
     length(xc) == p || throw(ArgumentError("x_cols length must equal p"))
     zmat = z === nothing ? nothing : Matrix{Float64}(z)
     zc = z_cols === nothing ? nothing : String.(collect(z_cols))
+    svec = s === nothing ? nothing : Float64.(s)
+    if svec !== nothing
+        length(svec) == n || throw(DimensionMismatch("s length"))
+    end
+    idv = id === nothing ? nothing : Int.(id)
+    tv = t === nothing ? nothing : Int.(t)
+    sc = score === nothing ? nothing : Float64.(score)
     return DoubleMLData(Matrix{Float64}(x), Float64.(y), Float64.(d),
-                        String(y_col), String(d_col), xc, zmat, zc)
+                        String(y_col), String(d_col), xc, zmat, zc,
+                        svec, s_col === nothing ? nothing : String(s_col),
+                        idv, tv, sc)
 end
 
 """
@@ -47,7 +67,11 @@ function DoubleMLData(df::DataFrame;
                       y_col::AbstractString,
                       d_cols,
                       x_cols=nothing,
-                      z_cols=nothing)
+                      z_cols=nothing,
+                      s_col=nothing,
+                      id_col=nothing,
+                      t_col=nothing,
+                      score_col=nothing)
     y_col = String(y_col)
     d_col = d_cols isa AbstractString ? String(d_cols) : String(first(d_cols))
     if d_cols isa AbstractVector && length(d_cols) > 1
@@ -64,6 +88,10 @@ function DoubleMLData(df::DataFrame;
                 push!(exclude, String(zc))
             end
         end
+        s_col !== nothing && push!(exclude, String(s_col))
+        id_col !== nothing && push!(exclude, String(id_col))
+        t_col !== nothing && push!(exclude, String(t_col))
+        score_col !== nothing && push!(exclude, String(score_col))
         x_cols = [c for c in string_names if c ∉ exclude]
     else
         x_cols = String.(collect(x_cols))
@@ -79,8 +107,14 @@ function DoubleMLData(df::DataFrame;
         zc = z_cols isa AbstractString ? [String(z_cols)] : String.(collect(z_cols))
         z = Matrix{Float64}(df[:, zc])
     end
+    s = s_col === nothing ? nothing : Float64.(df[!, String(s_col)])
+    idv = id_col === nothing ? nothing : Int.(df[!, String(id_col)])
+    tv = t_col === nothing ? nothing : Int.(df[!, String(t_col)])
+    sc = score_col === nothing ? nothing : Float64.(df[!, String(score_col)])
 
-    return DoubleMLData(X, y, d; y_col=y_col, d_col=d_col, x_cols=x_cols, z=z, z_cols=zc)
+    return DoubleMLData(X, y, d; y_col=y_col, d_col=d_col, x_cols=x_cols, z=z, z_cols=zc,
+                        s=s, s_col=s_col === nothing ? nothing : String(s_col),
+                        id=idv, t=tv, score=sc)
 end
 
 n_obs(data::DoubleMLData) = length(data.y)

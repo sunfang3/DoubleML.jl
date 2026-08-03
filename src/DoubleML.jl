@@ -97,6 +97,7 @@ export
     BootstrapResult,
     p_adjust,
     set_sample_splitting!,
+    evaluate_learners,
     cluster_se,
     apply_cluster_se!,
     # framework

@@ -85,7 +85,8 @@ function DoubleMLPLR(data::DoubleMLData, ml_l, ml_m;
     )
 end
 
-function fit!(m::DoubleMLPLR; store_predictions::Bool=true)
+function fit!(m::DoubleMLPLR; store_predictions::Bool=true,
+              external_predictions=nothing)
     data = m.data
     y = data.y
     n = n_obs(data)
@@ -119,20 +120,31 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true)
     rr_m = fill(NaN, n, n_rep)
 
     for j in 1:n_t
-        X, d, _ = design_for_treatment(data, j)
+        X, d, tname = design_for_treatment(data, j)
         d = collect(d)
+        # per-treatment nested external predictions (Python style)
+        ext_j = if external_predictions isa AbstractDict &&
+                   (haskey(external_predictions, tname) || haskey(external_predictions, Symbol(tname)))
+            haskey(external_predictions, tname) ? external_predictions[tname] :
+                external_predictions[Symbol(tname)]
+        else
+            external_predictions
+        end
         for r in 1:n_rep
             folds = m.smpls[r]
             use_clf_m = is_classifier(m.ml_m)
 
-            ℓ̂ = cross_fit_predict(m.ml_l, X, y, folds; classifier=false)
-            m̂ = cross_fit_predict(m.ml_m, X, d, folds; classifier=use_clf_m)
+            ℓ̂ = something(_apply_external_pred(ext_j, "ml_l", r, n),
+                           cross_fit_predict(m.ml_l, X, y, folds; classifier=false))
+            m̂ = something(_apply_external_pred(ext_j, "ml_m", r, n),
+                           cross_fit_predict(m.ml_m, X, d, folds; classifier=use_clf_m))
 
             if m.score == "IV-type"
                 v = d .- m̂
                 u = y .- ℓ̂
                 θ0 = sum(v .* u) / sum(v .* v)
-                ĝ = cross_fit_predict(m.ml_g, X, y .- θ0 .* d, folds; classifier=false)
+                ĝ = something(_apply_external_pred(ext_j, "ml_g", r, n),
+                               cross_fit_predict(m.ml_g, X, y .- θ0 .* d, folds; classifier=false))
                 psi_a = -(d .- m̂) .* d
                 psi_b = (d .- m̂) .* (y .- ĝ)
                 if j == 1

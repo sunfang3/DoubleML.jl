@@ -23,6 +23,11 @@ mutable struct DoubleMLPLIV <: AbstractDoubleML
     n_rep::Int
     score::String
     smpls::Vector
+    smpls_cluster::Union{Nothing,Vector}
+    n_folds_per_cluster::Int
+    var_scaling::Union{Nothing,Vector{Float64}}
+    is_cluster_data::Bool
+    cluster_dict::Union{Nothing,NamedTuple}
     coef::Vector{Float64}
     se::Vector{Float64}
     all_coef::Matrix{Float64}
@@ -42,6 +47,7 @@ function _pliv_init(data, ml_l, ml_m, ml_r, ml_g, partial_mode, n_folds, n_rep, 
         "DoubleMLPLIV requires at least one instrument (set z / z_cols)."))
     n_folds >= 2 || throw(ArgumentError("n_folds must be ≥ 2"))
     n_rep >= 1 || throw(ArgumentError("n_rep must be ≥ 1"))
+    n_treat(data) == 1 || throw(ArgumentError("DoubleMLPLIV supports a single treatment in this version"))
     partial_mode in (:partialX, :partialZ, :partialXZ) ||
         throw(ArgumentError("partial_mode must be :partialX, :partialZ, or :partialXZ"))
 
@@ -53,19 +59,42 @@ function _pliv_init(data, ml_l, ml_m, ml_r, ml_g, partial_mode, n_folds, n_rep, 
         throw(ArgumentError("score must be \"partialling out\" or \"IV-type\""))
     end
 
-    smpls = draw_sample_splitting ?
-        make_repeated_folds(n_obs(data), n_folds, n_rep; rng=rng) :
-        Vector{Any}()
-
     n = n_obs(data)
+    is_cl = is_cluster_data(data)
+    smpls, smpls_cluster, n_fpc = if draw_sample_splitting
+        init_sample_splitting(data, n_folds, n_rep; rng=rng)
+    else
+        Vector{Any}(), nothing, n_folds
+    end
+
     return DoubleMLPLIV(
         data, ml_l, ml_m, ml_r, ml_g, partial_mode, n_folds, n_rep, String(score), smpls,
+        smpls_cluster, n_fpc, nothing, is_cl, nothing,
         Float64[], Float64[],
         zeros(1, n_rep), zeros(1, n_rep),
         fill(NaN, n, n_rep, 1), fill(NaN, n, n_rep, 1),
         Dict{String,Matrix{Float64}}(),
         [data.d_col], nothing, false, rng,
     )
+end
+
+function _pliv_ensure_smpls!(m::DoubleMLPLIV)
+    if isempty(m.smpls)
+        smpls, smpls_cluster, n_fpc = init_sample_splitting(m.data, m.n_folds, m.n_rep; rng=m.rng)
+        m.smpls = smpls
+        m.smpls_cluster = smpls_cluster
+        m.n_folds_per_cluster = n_fpc
+        m.is_cluster_data = is_cluster_data(m.data)
+    end
+end
+
+function _pliv_se(m::DoubleMLPLIV, psi_a, psi_b, θ, folds, rep)
+    is_cl = is_cluster_data(m.data)
+    return se_from_score(psi_a, psi_b, θ;
+                         smpls=folds,
+                         cluster=is_cl ? m.data.cluster : nothing,
+                         smpls_cluster=is_cl ? m.smpls_cluster[rep] : nothing,
+                         n_folds_per_cluster=m.n_folds_per_cluster)
 end
 
 """Default: partial out X (Python `DoubleMLPLIV`)."""
@@ -174,10 +203,7 @@ function _fit_pliv_partial_x!(m::DoubleMLPLIV; store_predictions::Bool=true)
     n = n_obs(data)
     n_rep = m.n_rep
     k = size(Z, 2)
-
-    if isempty(m.smpls)
-        m.smpls = make_repeated_folds(n, m.n_folds, n_rep; rng=m.rng)
-    end
+    _pliv_ensure_smpls!(m)
 
     all_coef = zeros(1, n_rep)
     all_se = zeros(1, n_rep)
@@ -187,6 +213,7 @@ function _fit_pliv_partial_x!(m::DoubleMLPLIV; store_predictions::Bool=true)
     m_preds = fill(NaN, n, n_rep)
     r_preds = fill(NaN, n, n_rep)
     g_preds = fill(NaN, n, n_rep)
+    var_scaling = fill(Float64(n), 1)
 
     for rep in 1:n_rep
         folds = m.smpls[rep]
@@ -222,9 +249,10 @@ function _fit_pliv_partial_x!(m::DoubleMLPLIV; store_predictions::Bool=true)
         end
 
         θ = est_coef_linear(psi_a, psi_b)
-        se = se_linear(psi_a, psi_b, θ)
+        se, vsf = _pliv_se(m, psi_a, psi_b, θ, folds, rep)
         all_coef[1, rep] = θ
         all_se[1, rep] = se
+        var_scaling[1] = vsf
         psi_arr[:, rep, 1] = psi_a .* θ .+ psi_b
         psi_d_arr[:, rep, 1] = psi_a
         l_preds[:, rep] = ℓ̂
@@ -233,7 +261,7 @@ function _fit_pliv_partial_x!(m::DoubleMLPLIV; store_predictions::Bool=true)
 
     _finalize_pliv!(m, all_coef, all_se, psi_arr, psi_d_arr, store_predictions,
                     Dict("ml_l" => l_preds, "ml_m" => m_preds, "ml_r" => r_preds,
-                         "ml_g" => g_preds))
+                         "ml_g" => g_preds); var_scaling=var_scaling)
 end
 
 function _fit_pliv_partial_z!(m::DoubleMLPLIV; store_predictions::Bool=true)
@@ -243,35 +271,32 @@ function _fit_pliv_partial_z!(m::DoubleMLPLIV; store_predictions::Bool=true)
     XZ = hcat(X, Z)
     n = n_obs(data)
     n_rep = m.n_rep
-
-    if isempty(m.smpls)
-        m.smpls = make_repeated_folds(n, m.n_folds, n_rep; rng=m.rng)
-    end
+    _pliv_ensure_smpls!(m)
 
     all_coef = zeros(1, n_rep)
     all_se = zeros(1, n_rep)
     psi_arr = fill(NaN, n, n_rep, 1)
     psi_d_arr = fill(NaN, n, n_rep, 1)
     r_preds = fill(NaN, n, n_rep)
+    var_scaling = fill(Float64(n), 1)
 
     for rep in 1:n_rep
         folds = m.smpls[rep]
-        # r̂ = E[D | X, Z]
         r̂ = cross_fit_predict(m.ml_r, XZ, d, folds; classifier=false)
-        # ψ_a = -r̂ D, ψ_b = r̂ Y
         psi_a = -(r̂ .* d)
         psi_b = r̂ .* y
         θ = est_coef_linear(psi_a, psi_b)
-        se = se_linear(psi_a, psi_b, θ)
+        se, vsf = _pliv_se(m, psi_a, psi_b, θ, folds, rep)
         all_coef[1, rep] = θ
         all_se[1, rep] = se
+        var_scaling[1] = vsf
         psi_arr[:, rep, 1] = psi_a .* θ .+ psi_b
         psi_d_arr[:, rep, 1] = psi_a
         r_preds[:, rep] = r̂
     end
 
     _finalize_pliv!(m, all_coef, all_se, psi_arr, psi_d_arr, store_predictions,
-                    Dict("ml_r" => r_preds))
+                    Dict("ml_r" => r_preds); var_scaling=var_scaling)
 end
 
 function _fit_pliv_partial_xz!(m::DoubleMLPLIV; store_predictions::Bool=true)
@@ -281,10 +306,7 @@ function _fit_pliv_partial_xz!(m::DoubleMLPLIV; store_predictions::Bool=true)
     XZ = hcat(X, Z)
     n = n_obs(data)
     n_rep = m.n_rep
-
-    if isempty(m.smpls)
-        m.smpls = make_repeated_folds(n, m.n_folds, n_rep; rng=m.rng)
-    end
+    _pliv_ensure_smpls!(m)
 
     all_coef = zeros(1, n_rep)
     all_se = zeros(1, n_rep)
@@ -293,14 +315,12 @@ function _fit_pliv_partial_xz!(m::DoubleMLPLIV; store_predictions::Bool=true)
     l_preds = fill(NaN, n, n_rep)
     m_preds = fill(NaN, n, n_rep)
     r_preds = fill(NaN, n, n_rep)
+    var_scaling = fill(Float64(n), 1)
 
     for rep in 1:n_rep
         folds = m.smpls[rep]
-        # ℓ̂ = E[Y|X]
         ℓ̂ = cross_fit_predict(m.ml_l, X, y, folds; classifier=false)
-        # m̂ = E[D|X,Z] with train preds
         m̂, train_list = _cross_fit_with_train_preds(m.ml_m, XZ, d, folds)
-        # m̃ = E[m_train | X] fold-specific targets
         m̃ = _cross_fit_fold_targets(m.ml_r, X, train_list, folds)
 
         u = y .- ℓ̂
@@ -310,9 +330,10 @@ function _fit_pliv_partial_xz!(m::DoubleMLPLIV; store_predictions::Bool=true)
         psi_b = v .* u
 
         θ = est_coef_linear(psi_a, psi_b)
-        se = se_linear(psi_a, psi_b, θ)
+        se, vsf = _pliv_se(m, psi_a, psi_b, θ, folds, rep)
         all_coef[1, rep] = θ
         all_se[1, rep] = se
+        var_scaling[1] = vsf
         psi_arr[:, rep, 1] = psi_a .* θ .+ psi_b
         psi_d_arr[:, rep, 1] = psi_a
         l_preds[:, rep] = ℓ̂
@@ -321,15 +342,24 @@ function _fit_pliv_partial_xz!(m::DoubleMLPLIV; store_predictions::Bool=true)
     end
 
     _finalize_pliv!(m, all_coef, all_se, psi_arr, psi_d_arr, store_predictions,
-                    Dict("ml_l" => l_preds, "ml_m" => m_preds, "ml_r" => r_preds))
+                    Dict("ml_l" => l_preds, "ml_m" => m_preds, "ml_r" => r_preds);
+                    var_scaling=var_scaling)
 end
 
-function _finalize_pliv!(m, all_coef, all_se, psi_arr, psi_d_arr, store_predictions, preds)
+function _finalize_pliv!(m, all_coef, all_se, psi_arr, psi_d_arr, store_predictions, preds;
+                         var_scaling=nothing)
     coef, se = aggregate_reps(all_coef, all_se)
     m.coef = coef; m.se = se
     m.all_coef = all_coef; m.all_se = all_se
     m.psi = psi_arr; m.psi_deriv = psi_d_arr
+    m.var_scaling = var_scaling
     m.boot = nothing
+    if is_cluster_data(m.data)
+        m.cluster_dict = (
+            smpls=m.smpls, smpls_cluster=m.smpls_cluster,
+            cluster_vars=m.data.cluster, n_folds_per_cluster=m.n_folds_per_cluster,
+        )
+    end
     if store_predictions
         # drop unused ml_g empty unless IV-type
         if m.score == "IV-type" && haskey(preds, "ml_g")

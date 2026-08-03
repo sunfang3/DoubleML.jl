@@ -105,6 +105,97 @@ function set_sample_splitting!(m::AbstractDoubleML, smpls)
 end
 
 """
+    evaluate_learners(m; metric=rmse) -> Dict
+
+Cross-fitted nuisance prediction quality (Python `evaluate_learners`).
+Uses stored `predictions` from `fit!(...; store_predictions=true)`.
+
+# Returns
+Dict of learner name → mean metric over available non-NaN entries (averaged across reps).
+Default metric is RMSE for continuous targets; for probability predictions still RMSE vs labels when recoverable.
+"""
+function evaluate_learners(m::AbstractDoubleML; metric::Function=_default_rmse)
+    m.fitted || error("Call fit! first")
+    hasproperty(m, :predictions) || error("Model has no predictions field")
+    isempty(m.predictions) && error("No stored predictions; re-fit with store_predictions=true")
+    data = m.data
+    out = Dict{String,Float64}()
+    for (name, pred) in m.predictions
+        pred isa AbstractMatrix || continue
+        n, n_rep = size(pred)
+        # choose a target vector by learner name convention
+        ytrue = _nuisance_target(data, String(name))
+        ytrue === nothing && continue
+        scores = Float64[]
+        for r in 1:n_rep
+            p = @view pred[:, r]
+            mask = .!isnan.(p) .& .!isnan.(ytrue)
+            count(mask) == 0 && continue
+            push!(scores, metric(ytrue[mask], p[mask]))
+        end
+        isempty(scores) || (out[String(name)] = mean(scores))
+    end
+    return out
+end
+
+_default_rmse(y, yhat) = sqrt(mean((y .- yhat) .^ 2))
+
+function _nuisance_target(data::DoubleMLData, name::AbstractString)
+    n = lowercase(name)
+    if occursin("ml_l", n) || n in ("ml_g", "ml_g0", "ml_g1")
+        return data.y
+    elseif n == "ml_m" || startswith(n, "ml_m")
+        # IIVM/PLIV: m often models Z; PLR/IRM: D
+        if n_instr(data) >= 1
+            return vec(@view data.z[:, 1])
+        end
+        return data.d
+    elseif n in ("ml_r", "ml_r0", "ml_r1") || startswith(n, "ml_r")
+        return data.d
+    elseif n == "ml_pi"
+        return data.s === nothing ? nothing : data.s
+    else
+        return nothing
+    end
+end
+
+"""
+    _apply_external_pred(external, key, rep, n) -> Union{Nothing,Vector}
+
+Look up external predictions for one learner and rep.
+`external` is `Dict` with keys like `"ml_l"` → `n × n_rep` matrix, or
+nested `Dict(treat_name => Dict(learner => matrix))` (first treat used if nested).
+"""
+function _apply_external_pred(external, key::AbstractString, rep::Int, n::Int)
+    external === nothing && return nothing
+    mat = nothing
+    if haskey(external, key)
+        mat = external[key]
+    elseif haskey(external, Symbol(key))
+        mat = external[Symbol(key)]
+    else
+        # nested by treatment: use first treatment dict
+        for v in values(external)
+            if v isa AbstractDict && (haskey(v, key) || haskey(v, Symbol(key)))
+                mat = haskey(v, key) ? v[key] : v[Symbol(key)]
+                break
+            end
+        end
+    end
+    mat === nothing && return nothing
+    if mat isa AbstractVector
+        length(mat) == n || throw(DimensionMismatch("external $key length"))
+        return Float64.(mat)
+    elseif mat isa AbstractMatrix
+        size(mat, 1) == n || throw(DimensionMismatch("external $key rows"))
+        size(mat, 2) >= rep || throw(ArgumentError("external $key missing rep $rep"))
+        return Float64.(@view mat[:, rep])
+    else
+        throw(ArgumentError("external $key must be Vector or Matrix"))
+    end
+end
+
+"""
     p_adjust(m; method=:holm) -> DataFrame
 
 Multiple-testing adjusted p-values for multi-parameter models.
@@ -155,6 +246,23 @@ function Base.show(io::IO, m::AbstractDoubleML)
     else
         print(io, "$name(coef=$(round.(m.coef; digits=4)), se=$(round.(m.se; digits=4)))")
     end
+end
+
+# ---- IPW helpers (shared by IRM / IIVM / PQ / …) ----
+
+_clip_ps(m, ε) = clamp.(m, ε, 1 - ε)
+
+"""
+Normalize inverse-probability weights so E[D/m] = E[(1−D)/(1−m)] = 1
+(Python `_normalize_ipw`).
+"""
+function _normalize_ipw(propensity::AbstractVector, treatment::AbstractVector)
+    p = Float64.(propensity)
+    d = Float64.(treatment)
+    p = _clip_ps(p, 1e-8)
+    mean_t1 = mean(d ./ p)
+    mean_t0 = mean((1 .- d) ./ (1 .- p))
+    return d .* (p .* mean_t1) .+ (1 .- d) .* (1 .- (1 .- p) .* mean_t0)
 end
 
 # ---- score helpers (linear scores ψ = ψ_a θ + ψ_b) ----

@@ -101,7 +101,8 @@ function _cross_fit_g_binary(ml_g, X, y, d, folds)
     return g0, g1
 end
 
-function fit!(m::DoubleMLIRM; store_predictions::Bool=true)
+function fit!(m::DoubleMLIRM; store_predictions::Bool=true,
+              external_predictions=nothing)
     data = m.data
     y = data.y
     n = n_obs(data)
@@ -135,12 +136,28 @@ function fit!(m::DoubleMLIRM; store_predictions::Bool=true)
     rr_m = fill(NaN, n, n_rep)
 
     for j in 1:n_t
-        X, d, _ = design_for_treatment(data, j)
+        X, d, tname = design_for_treatment(data, j)
         d = collect(d)
+        ext_j = if external_predictions isa AbstractDict &&
+                   (haskey(external_predictions, tname) || haskey(external_predictions, Symbol(tname)))
+            haskey(external_predictions, tname) ? external_predictions[tname] :
+                external_predictions[Symbol(tname)]
+        else
+            external_predictions
+        end
         for r in 1:n_rep
             folds = m.smpls[r]
-            g0, g1 = _cross_fit_g_binary(m.ml_g, X, y, d, folds)
-            m̂ = cross_fit_predict(m.ml_m, X, d, folds; classifier=is_classifier(m.ml_m))
+            g0_ext = _apply_external_pred(ext_j, "ml_g0", r, n)
+            g1_ext = _apply_external_pred(ext_j, "ml_g1", r, n)
+            if g0_ext === nothing || g1_ext === nothing
+                g0, g1 = _cross_fit_g_binary(m.ml_g, X, y, d, folds)
+                g0_ext !== nothing && (g0 = g0_ext)
+                g1_ext !== nothing && (g1 = g1_ext)
+            else
+                g0, g1 = g0_ext, g1_ext
+            end
+            m̂ = something(_apply_external_pred(ext_j, "ml_m", r, n),
+                           cross_fit_predict(m.ml_m, X, d, folds; classifier=is_classifier(m.ml_m)))
             m̂ = clamp.(m̂, ε, 1 - ε)
 
             if m.score == "ATE"

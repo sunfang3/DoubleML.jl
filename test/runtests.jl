@@ -941,4 +941,58 @@ using Statistics
         bootstrap!(f; n_rep_boot=30, rng=MersenneTwister(822))
         @test confint(f; joint=false).lower[1] < plr.coef[1]
     end
+
+    @testset "IIVM normalize_ipw / subgroups / evaluate_learners" begin
+        data = make_iivm_data(n_obs=1800, dim_x=4, theta=0.5; seed=901)
+        iivm = DoubleMLIIVM(
+            data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5),
+            LogisticRegressionLearner(α=0.5);
+            n_folds=3, trimming_threshold=0.05,
+            normalize_ipw=true,
+            subgroups=(always_takers=true, never_takers=true),
+            rng=MersenneTwister(901),
+        )
+        fit!(iivm)
+        @test isfinite(iivm.coef[1])
+        @test iivm.se[1] > 0
+        ev = evaluate_learners(iivm)
+        @test haskey(ev, "ml_m")
+        @test ev["ml_m"] >= 0
+        # no always-takers: r0 forced to 0
+        iivm2 = DoubleMLIIVM(
+            data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5),
+            LogisticRegressionLearner(α=0.5);
+            n_folds=3, always_takers=false, never_takers=true,
+            rng=MersenneTwister(902),
+        )
+        fit!(iivm2)
+        @test all(iivm2.predictions["ml_r0"] .== 0)
+    end
+
+    @testset "external_predictions PLR" begin
+        data = make_plr_data(n_obs=400, dim_x=4, theta=0.5; seed=911)
+        plr0 = DoubleMLPLR(data, LinearRegressionLearner(), LinearRegressionLearner();
+                           n_folds=3, rng=MersenneTwister(911))
+        fit!(plr0)
+        # re-fit using stored predictions as external (should match closely)
+        plr1 = DoubleMLPLR(data, LinearRegressionLearner(), LinearRegressionLearner();
+                           n_folds=3, n_rep=1, draw_sample_splitting=false, rng=MersenneTwister(911))
+        set_sample_splitting!(plr1, plr0.smpls)
+        fit!(plr1; external_predictions=plr0.predictions)
+        @test plr1.coef[1] ≈ plr0.coef[1] atol=1e-10
+        @test plr1.se[1] ≈ plr0.se[1] atol=1e-10
+    end
+
+    @testset "DID multi experimental score" begin
+        data = make_did_panel_data(n_id=180, n_t=4, dim_x=2, theta=2.0; seed=921)
+        multi = DoubleMLDIDMulti(
+            data, RidgeLearner(α=0.5), nothing;
+            score="experimental", n_folds=3, rng=MersenneTwister(921),
+        )
+        fit!(multi)
+        @test multi.fitted
+        @test all(isfinite, multi.coef)
+        post = att_table(multi)
+        @test abs(mean(post.coef[post.post]) - 2.0) < 1.5
+    end
 end

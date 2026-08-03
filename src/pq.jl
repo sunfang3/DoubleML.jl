@@ -6,23 +6,7 @@
 # with g(X) = P(Y≤θ | X, D=d), m_d(X) = P(D=d | X).
 
 # ---- small numeric utilities ------------------------------------------------
-
-"""Clip propensity to (ε, 1−ε)."""
-_clip_ps(m, ε) = clamp.(m, ε, 1 - ε)
-
-"""
-Normalize inverse-probability weights so E[D/m] = E[(1−D)/(1−m)] = 1
-(Python `_normalize_ipw`).
-"""
-function _normalize_ipw(propensity::AbstractVector, treatment::AbstractVector)
-    p = Float64.(propensity)
-    d = Float64.(treatment)
-    p = _clip_ps(p, 1e-8)
-    mean_t1 = mean(d ./ p)
-    mean_t0 = mean((1 .- d) ./ (1 .- p))
-    # adjusted propensity
-    return d .* (p .* mean_t1) .+ (1 .- d) .* (1 .- (1 .- p) .* mean_t0)
-end
+# _clip_ps / _normalize_ipw defined in base.jl
 
 """Stratified 50/50 split of index vector by binary labels `d`."""
 function _stratified_half(idx::AbstractVector{Int}, d::AbstractVector, rng::AbstractRNG)

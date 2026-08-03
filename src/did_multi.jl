@@ -148,6 +148,7 @@ mutable struct DoubleMLDIDMulti <: AbstractDoubleML
     anticipation_periods::Int
     n_folds::Int
     n_rep::Int
+    score::String
     trimming_threshold::Float64
     in_sample_normalization::Bool
     never_treated_value::Int
@@ -173,12 +174,13 @@ mutable struct DoubleMLDIDMulti <: AbstractDoubleML
     rng::AbstractRNG
 end
 
-function DoubleMLDIDMulti(data::DoubleMLData, ml_g, ml_m;
+function DoubleMLDIDMulti(data::DoubleMLData, ml_g, ml_m=nothing;
                           control_group::AbstractString="never_treated",
                           anticipation_periods::Int=0,
                           gt_combinations=:standard,
                           n_folds::Int=5,
                           n_rep::Int=1,
+                          score::AbstractString="observational",
                           trimming_threshold::Real=1e-2,
                           in_sample_normalization::Bool=true,
                           never_treated_value::Integer=0,
@@ -189,6 +191,11 @@ function DoubleMLDIDMulti(data::DoubleMLData, ml_g, ml_m;
     cg in ("never_treated", "not_yet_treated") ||
         throw(ArgumentError("control_group must be \"never_treated\" or \"not_yet_treated\""))
     anticipation_periods >= 0 || throw(ArgumentError("anticipation_periods ≥ 0"))
+    sc = String(score)
+    sc in ("observational", "experimental") ||
+        throw(ArgumentError("score must be \"observational\" or \"experimental\""))
+    sc == "observational" && ml_m === nothing &&
+        throw(ArgumentError("ml_m required for score=\"observational\""))
 
     never = Int(never_treated_value)
     gvals = _g_values(data)
@@ -204,7 +211,7 @@ function DoubleMLDIDMulti(data::DoubleMLData, ml_g, ml_m;
     names = ["ATT(g=$g,t_pre=$tp,t=$te)" for (g, tp, te) in combos]
     return DoubleMLDIDMulti(
         data, ml_g, ml_m, cg, anticipation_periods,
-        n_folds, n_rep, Float64(trimming_threshold), in_sample_normalization,
+        n_folds, n_rep, sc, Float64(trimming_threshold), in_sample_normalization,
         never, gvals, tvals, combos,
         Vector{Any}(),
         Float64[], Float64[],
@@ -296,9 +303,9 @@ function fit!(m::DoubleMLDIDMulti; store_predictions::Bool=false)
             m.control_group, m.never_treated_value, m.anticipation_periods, m.t_values,
         )
         did = DoubleMLDID(
-            cs, clone(m.ml_g), clone(m.ml_m);
+            cs, clone(m.ml_g), m.score == "observational" ? clone(m.ml_m) : nothing;
             n_folds=m.n_folds, n_rep=n_rep,
-            score="observational",
+            score=m.score,
             in_sample_normalization=m.in_sample_normalization,
             trimming_threshold=m.trimming_threshold,
             rng=copy(m.rng),

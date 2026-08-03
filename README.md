@@ -120,6 +120,11 @@ model.confint()                →    confint(model)
 | **IRM weights** | Observation weights for IRM ATE/ATTE | ✅ |
 | **Framework** | `construct_framework` / `concat` / `+` `-` `*` joint IF algebra | ✅ |
 | **Multi-treatment** | `d_cols` multi-column D for PLR/IRM (`use_other_treat_as_covariate`) | ✅ |
+| **external_predictions** | Inject nuisance preds in `fit!` (PLR/IRM/IIVM) | ✅ |
+| **evaluate_learners** | Cross-fit RMSE of stored nuisance predictions | ✅ |
+| **IIVM subgroups / IPW** | `always_takers` / `never_takers` / `normalize_ipw` | ✅ |
+| **DID multi experimental** | `score="experimental"` (no propensity) | ✅ |
+| **Cluster PLIV/IIVM** | cluster-in-fit SE path | ✅ |
 
 ## Built-in learners
 

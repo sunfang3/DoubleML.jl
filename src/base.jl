@@ -4,12 +4,14 @@ Abstract base for DoubleML estimators (Python `doubleml.DoubleML` analogue).
 abstract type AbstractDoubleML end
 
 # Common result fields expected on concrete types after fit!:
-#   coef::Vector{Float64}
-#   se::Vector{Float64}
-#   all_coef::Matrix{Float64}   # (n_coefs × n_rep)
-#   all_se::Matrix{Float64}
-#   psi::Array{Float64,3}       # (n_obs × n_rep × n_coefs)
-#   fitted::Bool
+#   coef, se, all_coef, all_se, psi, psi_deriv, boot, fitted, rng, treat_names
+
+# Forward-declared; defined in bootstrap.jl
+mutable struct BootstrapResult
+    method::String
+    n_rep_boot::Int
+    boot_t_stat::Array{Float64,3}
+end
 
 function t_stat(m::AbstractDoubleML)
     m.fitted || error("Call fit! first")
@@ -24,21 +26,40 @@ end
 """
     confint(m; level=0.95, joint=false)
 
-Pointwise normal confidence intervals. Returns a DataFrame with columns
-`lower` and `upper`.
+Confidence intervals. Pointwise uses normal critical values; `joint=true`
+uses the max-|t| multiplier bootstrap (call [`bootstrap!`](@ref) first).
 """
 function confint(m::AbstractDoubleML; level::Real=0.95, joint::Bool=false)
     m.fitted || error("Call fit! first")
-    joint && error("joint confint requires bootstrap; not yet implemented in v0.1")
-    α = 1 - level
-    z = quantile(Normal(), 1 - α / 2)
-    lower = m.coef .- z .* m.se
-    upper = m.coef .+ z .* m.se
+    (0 < level < 1) || throw(ArgumentError("level must be in (0,1)"))
+
+    n_coef = length(m.coef)
+    n_rep = size(m.all_coef, 2)
+
+    if joint
+        (m.boot === nothing) && error("Apply bootstrap! before confint(joint=true)")
+        # max |t| over coefficients, per bootstrap draw and rep → quantiles per rep
+        # boot_t_stat: (n_rep_boot, n_coefs, n_rep)
+        max_abs = maximum(abs.(m.boot.boot_t_stat); dims=2)  # (n_rep_boot, 1, n_rep)
+        crit = [quantile(vec(max_abs[:, 1, r]), level) for r in 1:n_rep]
+    else
+        α = 1 - level
+        z = quantile(Normal(), 1 - α / 2)
+        crit = fill(z, n_rep)
+    end
+
+    # CI per rep then median-aggregate (Python DoubleML)
+    lower_reps = m.all_coef .- m.all_se .* reshape(crit, 1, n_rep)
+    upper_reps = m.all_coef .+ m.all_se .* reshape(crit, 1, n_rep)
+    lower = vec(median(lower_reps; dims=2))
+    upper = vec(median(upper_reps; dims=2))
+
     return DataFrame(
         treatment = m.treat_names,
         lower = lower,
         upper = upper,
-        level = fill(Float64(level), length(m.coef)),
+        level = fill(Float64(level), n_coef),
+        joint = fill(joint, n_coef),
     )
 end
 

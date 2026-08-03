@@ -60,4 +60,23 @@ println("\n## IIVM (LATE)")
 println("true LATE ≈ ", θ, " (DGP simplified)")
 println(summary_table(iivm))
 
+# ---------- PLIV partialZ / partialXZ ----------
+pliv_z = DoubleMLPLIV_partialZ(data_pliv, RidgeLearner(α=0.5); n_folds=5, rng=MersenneTwister(3))
+fit!(pliv_z)
+println("\n## PLIV partialZ")
+println(summary_table(pliv_z))
+
+data_pliv2 = make_pliv_data(n_obs=800, dim_x=10, dim_z=2, theta=θ; seed=5)
+ml2 = RidgeLearner(α=0.5)
+pliv_xz = DoubleMLPLIV_partialXZ(data_pliv2, clone(ml2), clone(ml2), clone(ml2);
+                                 n_folds=5, rng=MersenneTwister(5))
+fit!(pliv_xz)
+println("\n## PLIV partialXZ")
+println(summary_table(pliv_xz))
+
+# ---------- Multiplier bootstrap ----------
+bootstrap!(plr; method="normal", n_rep_boot=300, rng=MersenneTwister(9))
+println("\n## Bootstrap joint CI (PLR)")
+println(confint(plr; joint=true))
+
 println("\nDone.")

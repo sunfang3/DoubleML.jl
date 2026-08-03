@@ -17,21 +17,22 @@ Mirrors Python `doubleml.DoubleMLPLR`.
 """
 mutable struct DoubleMLPLR <: AbstractDoubleML
     data::DoubleMLData
-    ml_l::Any          # E[Y|X]
-    ml_m::Any          # E[D|X]
-    ml_g::Any          # E[Y - Dθ|X] (IV-type only)
+    ml_l::Any
+    ml_m::Any
+    ml_g::Any
     n_folds::Int
     n_rep::Int
     score::String
-    smpls::Vector      # length n_rep; each is vector of folds
-    # results
+    smpls::Vector
     coef::Vector{Float64}
     se::Vector{Float64}
     all_coef::Matrix{Float64}
     all_se::Matrix{Float64}
     psi::Array{Float64,3}
-    predictions::Dict{String,Matrix{Float64}}  # learner => n × n_rep
+    psi_deriv::Array{Float64,3}
+    predictions::Dict{String,Matrix{Float64}}
     treat_names::Vector{String}
+    boot::Union{Nothing,BootstrapResult}
     fitted::Bool
     rng::AbstractRNG
 end
@@ -62,8 +63,10 @@ function DoubleMLPLR(data::DoubleMLData, ml_l, ml_m;
         Float64[], Float64[],
         zeros(1, n_rep), zeros(1, n_rep),
         fill(NaN, n, n_rep, 1),
+        fill(NaN, n, n_rep, 1),
         Dict{String,Matrix{Float64}}(),
         [data.d_col],
+        nothing,
         false,
         rng,
     )
@@ -82,6 +85,7 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true)
     all_coef = zeros(1, n_rep)
     all_se = zeros(1, n_rep)
     psi_arr = fill(NaN, n, n_rep, 1)
+    psi_d_arr = fill(NaN, n, n_rep, 1)
 
     l_preds = fill(NaN, n, n_rep)
     m_preds = fill(NaN, n, n_rep)
@@ -95,7 +99,6 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true)
         m̂ = cross_fit_predict(m.ml_m, X, d, folds; classifier=use_clf_m)
 
         if m.score == "IV-type"
-            # initial θ from partialling-out
             v = d .- m̂
             u = y .- ℓ̂
             θ0 = sum(v .* u) / sum(v .* v)
@@ -116,6 +119,7 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true)
         all_coef[1, r] = θ
         all_se[1, r] = se
         psi_arr[:, r, 1] = psi_a .* θ .+ psi_b
+        psi_d_arr[:, r, 1] = psi_a
         l_preds[:, r] = ℓ̂
         m_preds[:, r] = m̂
     end
@@ -126,6 +130,8 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true)
     m.all_coef = all_coef
     m.all_se = all_se
     m.psi = psi_arr
+    m.psi_deriv = psi_d_arr
+    m.boot = nothing
     if store_predictions
         m.predictions = Dict("ml_l" => l_preds, "ml_m" => m_preds)
         if m.score == "IV-type"

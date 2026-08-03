@@ -147,4 +147,52 @@ using Statistics
         @test n_instr(data) == 1
         @test data.z_cols == ["Z1"]
     end
+
+    @testset "Multiplier bootstrap + joint CI" begin
+        data = make_plr_data(n_obs=600, dim_x=6, theta=0.5; seed=11)
+        dml = DoubleMLPLR(data, RidgeLearner(α=0.5), RidgeLearner(α=0.5);
+                          n_folds=4, rng=MersenneTwister(11))
+        fit!(dml)
+        bootstrap!(dml; method="normal", n_rep_boot=200, rng=MersenneTwister(12))
+        @test dml.boot !== nothing
+        @test size(dml.boot.boot_t_stat, 1) == 200
+        ci_pt = confint(dml; joint=false)
+        ci_jt = confint(dml; joint=true)
+        # both CIs cover the point estimate
+        @test ci_pt.lower[1] < dml.coef[1] < ci_pt.upper[1]
+        @test ci_jt.lower[1] < dml.coef[1] < ci_jt.upper[1]
+        @test ci_jt.joint[1] == true
+        # finite-sample joint critical value ≈ normal; allow slight noise
+        @test (ci_jt.upper[1] - ci_jt.lower[1]) >= 0.85 * (ci_pt.upper[1] - ci_pt.lower[1])
+        # wild / Bayes weights also run
+        bootstrap!(dml; method="wild", n_rep_boot=50, rng=MersenneTwister(1))
+        bootstrap!(dml; method="Bayes", n_rep_boot=50, rng=MersenneTwister(2))
+        @test dml.boot.method == "Bayes"
+    end
+
+    @testset "PLIV partialZ" begin
+        # Use many instruments (as in DoubleML partialZ fixtures) so the
+        # first-stage projection is informative without residualizing Y.
+        data = make_pliv_data(n_obs=1500, dim_x=5, dim_z=20, theta=0.5; seed=21)
+        dml = DoubleMLPLIV_partialZ(data, RidgeLearner(α=1.0);
+                                   n_folds=4, rng=MersenneTwister(21))
+        @test dml.partial_mode == :partialZ
+        fit!(dml)
+        @test isfinite(dml.coef[1])
+        @test dml.se[1] > 0
+        # partialZ without Y residualization is noisier — wide band
+        @test abs(dml.coef[1] - 0.5) < 0.75
+    end
+
+    @testset "PLIV partialXZ" begin
+        data = make_pliv_data(n_obs=1200, dim_x=5, dim_z=2, theta=0.5; seed=22)
+        ml = RidgeLearner(α=0.5)
+        dml = DoubleMLPLIV_partialXZ(data, clone(ml), clone(ml), clone(ml);
+                                     n_folds=4, rng=MersenneTwister(22))
+        @test dml.partial_mode == :partialXZ
+        fit!(dml)
+        @test isfinite(dml.coef[1])
+        @test dml.se[1] > 0
+        @test abs(dml.coef[1] - 0.5) < 0.35
+    end
 end

@@ -7,26 +7,14 @@ API-aligned with the Python package [DoubleML](https://docs.doubleml.org/).
 # Models
 - [`DoubleMLPLR`](@ref) — partially linear regression
 - [`DoubleMLIRM`](@ref) — interactive regression model (binary treatment ATE)
-- [`DoubleMLPLIV`](@ref) — partially linear IV regression
+- [`DoubleMLPLIV`](@ref) — partially linear IV (`:partialX` / `:partialZ` / `:partialXZ`)
 - [`DoubleMLIIVM`](@ref) — interactive IV model (binary D, binary Z → LATE)
 
-# Learners
-Duck-typed nuisance learners: any object supporting `fit!`, `predict` / `predict_proba`,
-and `clone`. Built-ins use long-lived Julia packages (`DecisionTree.jl` random forests,
-closed-form ridge/logistic).
+# Inference
+- Pointwise: `confint(m)`
+- Joint (multiplier bootstrap): `bootstrap!(m)` then `confint(m; joint=true)`
 
-# Example
-```julia
-using DoubleML
-data = make_plr_data(n_obs=500, dim_x=20, theta=0.5; seed=3141)
-ml_l = RidgeLearner(α=1.0)
-ml_m = RidgeLearner(α=1.0)
-dml = DoubleMLPLR(data, ml_l, ml_m; n_folds=5)
-fit!(dml)
-println(summary_table(dml))
-```
-
-See also: Python DoubleML (https://github.com/DoubleML/doubleml-for-py).
+See also: https://github.com/DoubleML/doubleml-for-py
 """
 module DoubleML
 
@@ -59,10 +47,14 @@ export
     DoubleMLPLR,
     DoubleMLIRM,
     DoubleMLPLIV,
+    DoubleMLPLIV_partialZ,
+    DoubleMLPLIV_partialXZ,
     DoubleMLIIVM,
     confint,
     summary_table,
     dml_summary,
+    bootstrap!,
+    BootstrapResult,
     # datasets
     make_plr_data,
     make_irm_data,
@@ -72,7 +64,8 @@ export
 include("learners.jl")
 include("data.jl")
 include("sample_splitting.jl")
-include("base.jl")
+include("base.jl")       # AbstractDoubleML, confint, summary_table
+include("bootstrap.jl")  # BootstrapResult, bootstrap! (needs AbstractDoubleML)
 include("plr.jl")
 include("irm.jl")
 include("pliv.jl")

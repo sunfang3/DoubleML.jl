@@ -95,10 +95,11 @@ model.confint()                →    confint(model)
 | PLR | `IV-type` | ✅ |
 | IRM | `ATE` (doubly robust) | ✅ |
 | IRM | `ATTE` | ✅ (experimental) |
-| **PLIV** | `partialling out` (1 or multi Z) | ✅ |
-| **PLIV** | `IV-type` (single Z) | ✅ |
+| **PLIV** | `partialling out` (`:partialX`, 1 or multi Z) | ✅ |
+| **PLIV** | `IV-type` (single Z, `:partialX`) | ✅ |
+| **PLIV** | `:partialZ` / `:partialXZ` | ✅ |
 | **IIVM** | `LATE` | ✅ |
-| Multiplier bootstrap | — | ⏳ planned |
+| **Multiplier bootstrap** | `normal` / `Bayes` / `wild` + joint CI | ✅ |
 | Hyperparameter tuning | — | ⏳ planned |
 
 ## Built-in learners
@@ -151,9 +152,10 @@ DoubleML/
 
 ```julia
 data = make_pliv_data(n_obs=1000, dim_z=1, theta=0.5; seed=1)
-# or from a DataFrame:
-# DoubleMLData(df; y_col="y", d_cols="d", z_cols="Z1")
-DoubleMLPLIV(data, ml_l, ml_m, ml_r)  # E[Y|X], E[Z|X], E[D|X]
+ml = RidgeLearner(α=0.5)
+DoubleMLPLIV(data, clone(ml), clone(ml), clone(ml))          # :partialX (default)
+DoubleMLPLIV_partialZ(data, clone(ml))                        # :partialZ
+DoubleMLPLIV_partialXZ(data, clone(ml), clone(ml), clone(ml)) # :partialXZ
 ```
 
 **IIVM** — binary `D` and binary `Z`, target = LATE:
@@ -161,6 +163,14 @@ DoubleMLPLIV(data, ml_l, ml_m, ml_r)  # E[Y|X], E[Z|X], E[D|X]
 ```julia
 data = make_iivm_data(n_obs=2000, theta=0.5; seed=1)
 DoubleMLIIVM(data, ml_g, ml_m, ml_r)  # E[Y|X,Z], E[Z|X], E[D|X,Z]
+```
+
+**Multiplier bootstrap** (joint CIs, Python-compatible):
+
+```julia
+fit!(dml)
+bootstrap!(dml; method="normal", n_rep_boot=500)  # also "Bayes", "wild"
+confint(dml; joint=true)
 ```
 
 ## Run tests

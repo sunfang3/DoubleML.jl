@@ -353,6 +353,71 @@ function set_params!(m::RandomForestClassifierLearner; n_trees=nothing, max_dept
     return m
 end
 
+# ========================= Dummy learners (Python DMLDummy*) =================
+
+"""
+    DMLDummyRegressor()
+
+Constant mean predictor (Python `doubleml.utils.DMLDummyRegressor`).
+Useful for smoke tests and external-prediction workflows.
+"""
+mutable struct DMLDummyRegressor <: AbstractLearner
+    mean::Float64
+    fitted::Bool
+end
+DMLDummyRegressor() = DMLDummyRegressor(0.0, false)
+clone(::DMLDummyRegressor) = DMLDummyRegressor()
+function fit!(m::DMLDummyRegressor, X::AbstractMatrix, y::AbstractVector)
+    m.mean = mean(Float64.(y))
+    m.fitted = true
+    return m
+end
+function predict(m::DMLDummyRegressor, X::AbstractMatrix)
+    m.fitted || error("DMLDummyRegressor is not fitted")
+    return fill(m.mean, size(X, 1))
+end
+get_params(::DMLDummyRegressor) = Dict{Symbol,Any}()
+set_params!(m::DMLDummyRegressor; kwargs...) = (m.fitted = false; m)
+
+"""
+    DMLDummyClassifier()
+
+Constant class-frequency predictor (Python `doubleml.utils.DMLDummyClassifier`).
+`predict_proba` returns the training positive rate.
+"""
+mutable struct DMLDummyClassifier <: AbstractLearner
+    p1::Float64
+    fitted::Bool
+end
+DMLDummyClassifier() = DMLDummyClassifier(0.5, false)
+is_classifier(::DMLDummyClassifier) = true
+clone(::DMLDummyClassifier) = DMLDummyClassifier()
+function fit!(m::DMLDummyClassifier, X::AbstractMatrix, y::AbstractVector)
+    yf = Float64.(y)
+    m.p1 = clamp(mean(yf), 1e-12, 1 - 1e-12)
+    m.fitted = true
+    return m
+end
+function predict(m::DMLDummyClassifier, X::AbstractMatrix)
+    m.fitted || error("DMLDummyClassifier is not fitted")
+    return Float64.(predict_proba(m, X) .>= 0.5)
+end
+function predict_proba(m::DMLDummyClassifier, X::AbstractMatrix)
+    m.fitted || error("DMLDummyClassifier is not fitted")
+    return fill(m.p1, size(X, 1))
+end
+get_params(::DMLDummyClassifier) = Dict{Symbol,Any}()
+set_params!(m::DMLDummyClassifier; kwargs...) = (m.fitted = false; m)
+
+"""
+    GlobalRegressor() / GlobalClassifier()
+
+Aliases for dummy constant learners (Python `GlobalRegressor` / `GlobalClassifier`
+when used as constant baselines).
+"""
+const GlobalRegressor = DMLDummyRegressor
+const GlobalClassifier = DMLDummyClassifier
+
 # ========================= Cross-fit helper =========================
 
 """

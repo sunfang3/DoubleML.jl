@@ -114,65 +114,52 @@ Construct (g, t_pre, t_eval) combinations.
 - `:universal` — fixed base period for each g; all other t as eval
 """
 function _construct_gt_combinations(setting::Symbol, g_values, t_values, never, anticipation::Int)
+    # Mirror Python doubleml.did.did_multi._construct_gt_combinations exactly.
     treatment_groups = sort([g for g in g_values if !_is_never_treated(g, never)])
     isempty(treatment_groups) && throw(ArgumentError("no treated groups found (all never-treated?)"))
-    t_values = sort(collect(t_values))
+    t_values = sort(collect(Int.(t_values)))
     combos = NTuple{3,Int}[]
 
     for g_val in treatment_groups
-        t_before = t_values[t_values .< g_val]
-        length(t_before) <= anticipation && continue
-        first_eval_index = anticipation + 1  # 1-based offset into t_values for first eval slot
+        t_before_g_all = t_values[t_values .< g_val]
+        # Python: first_eval_index = anticipation_periods + 1  (0-based)
+        # skip if not enough pre periods
+        length(t_before_g_all) <= anticipation && continue
+        first_eval_index_py = anticipation + 1  # 0-based index into t_values
+        # Julia 1-based start of t_values[first_eval_index:]
+        start_jl = first_eval_index_py + 1
+        start_jl > length(t_values) && continue
 
         if setting === :standard
-            t_before_g = t_before[end - anticipation]  # last relevant pre base
-            # enumerate t_eval from t_values[first_eval_index+1] ... actually Python uses
-            # t_values[first_eval_index:] with 0-based first_eval_index = anticipation+1
-            # so Julia: t_values[(anticipation+2):end] if 1-based... 
-            # Python: first_eval_index = anticipation_periods + 1  (0-based index)
-            # t_values[first_eval_index:] → from element at 0-based index anticipation+1
-            # = Julia index anticipation+2
-            start_idx = anticipation + 2
-            start_idx > length(t_values) && continue
-            for (i_off, t_eval) in enumerate(t_values[start_idx:end])
-                # i_t_eval in Python is 0 for first element of t_values[first_eval_index:]
-                # t_values[i_t_eval] in that slice... 
-                # Python: min(t_values[i_t_eval], t_before_g) where i_t_eval indexes full t_values
-                # for i_t_eval, t_eval in enumerate(t_values[first_eval_index:]):
-                #   i_t_eval is 0,1,2,... but min(t_values[i_t_eval], ...) uses 0-based full index WRONG?
-                # Looking again carefully:
-                #   for i_t_eval, t_eval in enumerate(t_values[first_eval_index:]):
-                #       (g_val, min(t_values[i_t_eval], t_before_g), t_eval)
-                # Here i_t_eval is 0,1,2... so t_values[0], t_values[1] — that's a Python bug or
-                # enumerate of the slice means i_t_eval is relative...
-                # In Python, enumerate(arr) gives indices 0..len-1 of the slice, and
-                # t_values[i_t_eval] uses those as indices into FULL t_values.
-                # So for first_eval_index=1, t_values[1:]=[t1,t2,t3], enumerate gives
-                # i=0,t=t1 → min(t_values[0], t_before)=min(t0, t_before)
-                # i=1,t=t2 → min(t_values[1], t_before)
-                # This seems intentional for pre-period t_pre selection.
-                i_abs = start_idx + i_off - 1  # 1-based index of t_eval in t_values
-                # match Python: i_t_eval = i_off - 1 (0-based relative) used as full index
-                i_py = i_off - 1  # 0-based
-                t_pre = min(t_values[i_py + 1], t_before_g)  # Julia 1-based
+            # t_before_g = t_values_before_g[-first_eval_index]
+            t_before_g = t_before_g_all[end - anticipation]
+            # for i_t_eval, t_eval in enumerate(t_values[first_eval_index:]):
+            #     (g_val, min(t_values[i_t_eval], t_before_g), t_eval)
+            # where i_t_eval is 0-based index into the *slice*, used as index into *full* t_values
+            for (i_off, t_eval) in enumerate(t_values[start_jl:end])
+                i_py = i_off - 1  # 0-based enumerate index
+                t_pre = min(t_values[i_py + 1], t_before_g)
                 push!(combos, (Int(g_val), Int(t_pre), Int(t_eval)))
             end
 
         elseif setting === :all
-            start_idx = anticipation + 2
-            start_idx > length(t_values) && continue
-            for t_eval in t_values[start_idx:end]
-                # t_pre candidates: t_values[t_values <= min(g,t_eval)] excluding last `anticipation+1`
+            # Python:
+            # for t_eval in t_values[first_eval_index:]:
+            #   for t_pre in t_values[t_values <= min(g_val, t_eval)][:-first_eval_index]:
+            for t_eval in t_values[start_jl:end]
                 tmax = min(g_val, t_eval)
                 candidates = t_values[t_values .<= tmax]
-                length(candidates) <= anticipation + 1 && continue
-                for t_pre in candidates[1:(end - anticipation - 1)]
+                # drop last `first_eval_index` entries (Python [:-first_eval_index])
+                n_drop = first_eval_index_py
+                length(candidates) <= n_drop && continue
+                for t_pre in candidates[1:(end - n_drop)]
                     push!(combos, (Int(g_val), Int(t_pre), Int(t_eval)))
                 end
             end
 
         elseif setting === :universal
-            base = t_before[end - anticipation]
+            # base_period = t_values_before_g[-first_eval_index]
+            base = t_before_g_all[end - anticipation]
             for t_eval in t_values
                 t_eval == base && continue
                 push!(combos, (Int(g_val), Int(base), Int(t_eval)))
@@ -305,23 +292,27 @@ function _did_multi_cs(data::DoubleMLData, g::Int, t_pre::Int, t_eval::Int,
     end
     ug = _unit_g_map(data)
 
-    # max_g_value for not_yet_treated (Python logic)
-    comparison_period = max(t_eval, g)
-    idx_c = findfirst(==(comparison_period), t_values)
-    max_g = if idx_c === nothing
-        comparison_period
+    # Python not_yet_treated:
+    #   max_g_value = t_values[min(where(t==eval_t) + anticipation, end)]
+    # (based on eval period only, not max(g, eval))
+    idx_eval = findfirst(==(t_eval), t_values)
+    max_g = if idx_eval === nothing
+        t_eval
     else
-        t_values[min(idx_c + anticipation, length(t_values))]
+        t_values[min(idx_eval + anticipation, length(t_values))]
     end
+
+    # Python keeps covariates from first of the two periods (min of pre/eval)
+    t_x = min(t_pre, t_eval)
 
     Xrows = Vector{Vector{Float64}}()
     ydelta = Float64[]
     dgroup = Float64[]
     unit_ids = Int[]
 
-    for u in sort(collect(keys(ug)))
+    for u in sort(collect(keys(ug)))  # stable id order (Python sorts by id)
         g_u = ug[u]
-        G_ind = isfinite(g_u) && isapprox(g_u, g; atol=0)
+        G_ind = isfinite(g_u) && isapprox(g_u, Float64(g); atol=0)
         if control_group == "never_treated"
             C_ind = _is_never_treated(g_u, never)
         else
@@ -332,11 +323,13 @@ function _did_multi_cs(data::DoubleMLData, g::Int, t_pre::Int, t_eval::Int,
         G_ind && C_ind && continue  # disjoint
         haskey(row_of, (u, t_pre)) || continue
         haskey(row_of, (u, t_eval)) || continue
-        i0 = row_of[(u, t_pre)]
-        i1 = row_of[(u, t_eval)]
-        push!(ydelta, data.y[i1] - data.y[i0])
+        haskey(row_of, (u, t_x)) || continue
+        i_pre = row_of[(u, t_pre)]
+        i_eval = row_of[(u, t_eval)]
+        i_x = row_of[(u, t_x)]
+        push!(ydelta, data.y[i_eval] - data.y[i_pre])
         push!(dgroup, G_ind ? 1.0 : 0.0)
-        push!(Xrows, vec(data.x[i0, :]))
+        push!(Xrows, vec(data.x[i_x, :]))
         push!(unit_ids, u)
     end
     isempty(ydelta) && error("No observations for ATT(g=$g, t_pre=$t_pre, t=$t_eval)")
@@ -369,6 +362,9 @@ function fit!(m::DoubleMLDIDMulti; store_predictions::Bool=false)
             m.data, g, t_pre, t_eval,
             m.control_group, m.never_treated_value, m.anticipation_periods, m.t_values,
         )
+        # Per-cell RNG seed from (g,t_pre,t_eval) for stable, independent folds
+        # (Python each binary model draws its own split independently)
+        cell_seed = UInt(hash((g, t_pre, t_eval, m.n_folds), UInt(0xD1D)))
         did = DoubleMLDID(
             cs, clone(m.ml_g), m.score == "observational" ? clone(m.ml_m) : nothing;
             n_folds=m.n_folds, n_rep=n_rep,
@@ -376,7 +372,7 @@ function fit!(m::DoubleMLDIDMulti; store_predictions::Bool=false)
             in_sample_normalization=m.in_sample_normalization,
             trimming_threshold=m.trimming_threshold,
             ps_processor=m.ps_processor,
-            rng=copy(m.rng),
+            rng=MersenneTwister(cell_seed),
         )
         fit!(did; store_predictions=store_predictions)
         push!(m.att_models, did)

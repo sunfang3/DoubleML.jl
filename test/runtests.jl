@@ -1298,6 +1298,45 @@ using Statistics
         end
     end
 
+    @testset "DID multi gt combos + CS covariates + Dummy learners" begin
+        # gt combinations match Python for anticipation 0 and 1
+        g = [0, 2, 3, 4]; t = [1, 2, 3, 4]
+        c0 = DoubleML._construct_gt_combinations(:standard, g, t, 0, 0)
+        @test c0 == [(2,1,2),(2,1,3),(2,1,4),(3,1,2),(3,2,3),(3,2,4),(4,1,2),(4,2,3),(4,3,4)]
+        c1 = DoubleML._construct_gt_combinations(:standard, g, t, 0, 1)
+        @test c1 == [(3,1,3),(3,1,4),(4,1,3),(4,2,4)]
+        cu = DoubleML._construct_gt_combinations(:universal, g, t, 0, 0)
+        @test (3,2,1) in cu  # pre-treatment eval allowed in universal
+
+        # Dummy learners smoke
+        X = randn(100, 3); y = randn(100); d = Float64.(rand(100) .< 0.4)
+        dr = DMLDummyRegressor(); fit!(dr, X, y)
+        @test all(predict(dr, X) .≈ mean(y))
+        dc = DMLDummyClassifier(); fit!(dc, X, d)
+        @test all(0 .< predict_proba(dc, X) .< 1)
+        @test GlobalRegressor === DMLDummyRegressor
+        @test DoubleML.is_classifier(DMLDummyClassifier())
+
+        # DID multi with dummy + Inf never-treated runs
+        base = make_did_panel_data(n_id=80, n_t=4, dim_x=2, theta=1.5; seed=1001)
+        data = recode_never_treated(base; from=0.0, to=Inf)
+        multi = DoubleMLDIDMulti(
+            data, DMLDummyRegressor(), DMLDummyClassifier();
+            n_folds=3, rng=MersenneTwister(1001),
+        )
+        @test isinf(multi.never_treated_value)
+        fit!(multi)
+        @test multi.fitted
+        @test all(isfinite, multi.coef)
+        # cell RNG deterministic: refit same
+        multi2 = DoubleMLDIDMulti(
+            data, DMLDummyRegressor(), DMLDummyClassifier();
+            n_folds=3, rng=MersenneTwister(9999),  # outer rng ignored for cell seeds
+        )
+        fit!(multi2)
+        @test multi2.coef ≈ multi.coef atol=1e-10
+    end
+
     @testset "SSM nested_random_state + tune_optuna extensions + cluster PLIV" begin
         # nonignorable with fixed nested_random_state=42 (Python default)
         sdata = make_ssm_data(n_obs=600, dim_x=3, theta=1.0; nonignorable=true, seed=990)

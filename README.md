@@ -135,6 +135,8 @@ model.confint()                →    confint(model)
 | **SSM nested_random_state** | Nonignorable nested half-splits reseed like Python `random_state=42` | ✅ |
 | **tune_optuna! PLIV/IIVM/SSM/DID** | Optuna-style spaces on more models | ✅ |
 | **make_pliv_cluster_data** | One-/two-way clustered PLIV DGP | ✅ |
+| **DID multi CS parity** | Python gt combos; X from min(pre,eval); not_yet max_g; per-cell fold seeds | ✅ |
+| **DMLDummy / Global learners** | Constant mean / class-rate nuisances (Python DMLDummy*) | ✅ |
 | **SSM** | Sample selection (`missing-at-random` / basic `nonignorable`) | ✅ |
 | **RDD** | Sharp/fuzzy RD with ML residualization + local linear | ✅ |
 | **Cluster SE** | One-way post-hoc + **cluster-in-fit** (1/2-way) for PLR/IRM | ✅ |

@@ -318,4 +318,92 @@ using Statistics
         @test 0 <= bm.cf_d < 1
         @test isfinite(bm.delta_theta)
     end
+
+    @testset "GATE PLR" begin
+        # constant θ ⇒ all group effects ≈ θ
+        data = make_plr_data(n_obs=1000, dim_x=8, theta=0.5; seed=101)
+        dml = DoubleMLPLR(data, RidgeLearner(α=0.5), RidgeLearner(α=0.5);
+                          n_folds=5, rng=MersenneTwister(101))
+        fit!(dml)
+        rng = MersenneTwister(102)
+        groups = rand(rng, ["A", "B", "C"], size(data.x, 1))
+        g = gate(dml, groups)
+        @test g.fitted
+        @test g.is_gate
+        @test length(g.coef) == 3
+        @test all(isfinite, g.coef)
+        # all groups should recover ≈ 0.5
+        @test all(abs.(g.coef .- 0.5) .< 0.25)
+        ci = confint(g)
+        @test nrow(ci) == 3
+        @test all(ci.lower .<= ci.effect .<= ci.upper)
+        st = summary_table(g)
+        @test nrow(st) == 3
+        # joint CI wider (or equal) than pointwise on average
+        cij = confint(g; joint=true, n_rep_boot=200, rng=MersenneTwister(103))
+        @test all(cij.joint)
+        @test mean(cij.upper .- cij.lower) >= mean(ci.upper .- ci.lower) - 1e-8
+    end
+
+    @testset "GATE IRM" begin
+        data = make_irm_data(n_obs=1200, dim_x=6, theta=0.5; seed=111)
+        dml = DoubleMLIRM(
+            data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            n_folds=5, trimming_threshold=0.05, rng=MersenneTwister(111),
+        )
+        fit!(dml)
+        # dummy matrix input
+        gvec = rand(MersenneTwister(112), 1:2, size(data.x, 1))
+        G = Float64.(hcat(gvec .== 1, gvec .== 2))
+        g = gate(dml, G)
+        @test length(g.coef) == 2
+        @test all(abs.(g.coef .- 0.5) .< 0.35)
+        ci = confint(g)
+        @test nrow(ci) == 2
+    end
+
+    @testset "CATE PLR poly basis" begin
+        data = make_plr_data(n_obs=900, dim_x=5, theta=0.5; seed=121)
+        dml = DoubleMLPLR(data, RidgeLearner(α=0.5), RidgeLearner(α=0.5);
+                          n_folds=4, rng=MersenneTwister(121))
+        fit!(dml)
+        Φ = poly_basis(data.x[:, 1]; degree=2, include_intercept=true)
+        c = cate(dml, Φ)
+        @test c.fitted && !c.is_gate
+        @test length(c.coef) == 3
+        # predicted effects near constant 0.5
+        ci = confint(c; basis=Φ)
+        @test nrow(ci) == size(Φ, 1)
+        @test mean(abs.(ci.effect .- 0.5)) < 0.3
+        # coefficient-level confint
+        ciβ = confint(c)
+        @test nrow(ciβ) == 3
+    end
+
+    @testset "CATE IRM poly basis" begin
+        data = make_irm_data(n_obs=1000, dim_x=5, theta=0.5; seed=131)
+        dml = DoubleMLIRM(
+            data, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+            n_folds=4, trimming_threshold=0.05, rng=MersenneTwister(131),
+        )
+        fit!(dml)
+        Φ = poly_basis(data.x[:, 1]; degree=2)
+        c = cate(dml, Φ)
+        @test length(c.coef) == 3
+        @test all(isfinite, c.coef)
+        # evaluate on a short grid
+        xg = range(minimum(data.x[:, 1]), maximum(data.x[:, 1]); length=20)
+        Φg = poly_basis(collect(xg); degree=2)
+        ci = confint(c; basis=Φg, joint=false)
+        @test nrow(ci) == 20
+        @test all(isfinite, ci.effect)
+    end
+
+    @testset "group_dummies helper" begin
+        g = ["a", "b", "a", "c"]
+        G, nm = group_dummies(g)
+        @test size(G) == (4, 3)
+        @test sum(G; dims=2) == ones(4, 1)  # exclusive
+        @test nm == ["Group_a", "Group_b", "Group_c"]
+    end
 end

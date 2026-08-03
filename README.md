@@ -102,6 +102,7 @@ model.confint()                →    confint(model)
 | **Multiplier bootstrap** | `normal` / `Bayes` / `wild` + joint CI | ✅ |
 | **Hyperparameter tuning** | grid / random search via `tune!` | ✅ |
 | **Sensitivity analysis** | OVB bounds (cf_y, cf_d, rho), RV / RVa (PLR, IRM) | ✅ |
+| **GATE / CATE** | Best linear predictor (`gate` / `cate` → `DoubleMLBLP`) for PLR & IRM | ✅ |
 
 ## Built-in learners
 
@@ -143,6 +144,7 @@ DoubleML/
 │   ├── iivm.jl          # interactive IV (LATE)
 │   ├── tune.jl          # grid / random hyperparameter search
 │   ├── sensitivity.jl   # OVB sensitivity (Chernozhukov et al. 2022)
+│   ├── blp.jl           # BLP / CATE / GATE
 │   └── datasets.jl
 ├── test/runtests.jl
 ├── examples/plr_irm_demo.jl
@@ -202,6 +204,25 @@ println(sensitivity_summary(dml))
 
 # Benchmark confounders by comparing long vs short regressions:
 # bm = sensitivity_benchmark(dml_long, dml_short)  # → (cf_y, cf_d, rho, delta_theta)
+```
+
+**GATE / CATE** (heterogeneous effects via best linear predictor; PLR & IRM):
+
+```julia
+fit!(dml)   # PLR or IRM (ATE)
+
+# Group average treatment effects
+groups = rand(["A", "B", "C"], size(data.x, 1))   # or an n×K dummy matrix
+g = gate(dml, groups)
+summary_table(g)
+confint(g)                       # pointwise
+confint(g; joint=true)           # simultaneous (Gaussian multiplier)
+
+# Conditional ATE: project orthogonal signal onto a basis φ(x)
+Φ = poly_basis(data.x[:, 1]; degree=3)   # or your own n×d design (e.g. B-splines)
+c = cate(dml, Φ)
+summary_table(c)
+confint(c; basis=Φ)              # effect curve + CI at each row of Φ
 ```
 
 ## Run tests

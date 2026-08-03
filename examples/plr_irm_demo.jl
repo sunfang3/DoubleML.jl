@@ -98,4 +98,19 @@ sensitivity_analysis!(plr; cf_y=0.04, cf_d=0.03, rho=1.0, null_hypothesis=0.0)
 println("\n## Sensitivity analysis (PLR)")
 println(sensitivity_summary(plr))
 
+# ---------- GATE / CATE (heterogeneous effects) ----------
+println("\n## GATE (PLR) — random groups")
+groups = rand(MersenneTwister(7), ["low", "mid", "high"], size(data_plr.x, 1))
+gobj = gate(plr, groups)
+println(summary_table(gobj))
+println(confint(gobj; joint=true, n_rep_boot=300, rng=MersenneTwister(8)))
+
+println("\n## CATE (IRM) — polynomial in X1")
+Φ = poly_basis(data_irm.x[:, 1]; degree=2)
+cobj = cate(irm, Φ)
+println(summary_table(cobj))
+# effect curve on a grid
+xg = collect(range(extrema(data_irm.x[:, 1])...; length=8))
+println(confint(cobj; basis=poly_basis(xg; degree=2)))
+
 println("\nDone.")

@@ -14,6 +14,7 @@ API-aligned with the Python package [DoubleML](https://docs.doubleml.org/).
 - Pointwise: `confint(m)`
 - Joint (multiplier bootstrap): `bootstrap!(m)` then `confint(m; joint=true)`
 - Sensitivity (omitted confounders): `sensitivity_analysis!` (PLR / IRM)
+- Heterogeneous effects: `gate` / `cate` → [`DoubleMLBLP`](@ref) (PLR / IRM)
 
 # Tuning
 - `tune!(m; param_grids=...)` then `fit!(m)`
@@ -72,6 +73,12 @@ export
     sensitivity_benchmark,
     SensitivityResult,
     SensitivityElements,
+    # heterogeneous effects (CATE / GATE)
+    DoubleMLBLP,
+    cate,
+    gate,
+    group_dummies,
+    poly_basis,
     # datasets
     make_plr_data,
     make_irm_data,
@@ -88,6 +95,7 @@ include("plr.jl")
 include("irm.jl")
 include("pliv.jl")
 include("iivm.jl")
+include("blp.jl")        # BLP / cate / gate (needs PLR & IRM)
 include("tune.jl")
 include("datasets.jl")
 

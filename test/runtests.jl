@@ -468,4 +468,70 @@ using Statistics
         fit!(dml)
         @test_throws ArgumentError policy_tree(dml, data.x; depth=1)
     end
+
+    @testset "Potential quantile PQ" begin
+        # constant shift treatment: Y = g(X) + θ D + ε ⇒ Q_τ(1) − Q_τ(0) ≈ θ
+        data = make_irm_data(n_obs=1500, dim_x=4, theta=0.5; seed=301)
+        pq1 = DoubleMLPQ(
+            data,
+            LogisticRegressionLearner(α=0.5),
+            LogisticRegressionLearner(α=0.5);
+            treatment=1, quantile=0.5, n_folds=3,
+            trimming_threshold=0.05, rng=MersenneTwister(301),
+        )
+        fit!(pq1)
+        @test pq1.fitted
+        @test isfinite(pq1.coef[1])
+        @test pq1.se[1] > 0
+        # median potential outcome treated should be finite and within y range
+        @test minimum(data.y) <= pq1.coef[1] <= maximum(data.y)
+
+        pq0 = DoubleMLPQ(
+            data,
+            LogisticRegressionLearner(α=0.5),
+            LogisticRegressionLearner(α=0.5);
+            treatment=0, quantile=0.5, n_folds=3,
+            trimming_threshold=0.05, rng=MersenneTwister(302),
+        )
+        fit!(pq0)
+        # QTE proxy
+        @test isfinite(pq1.coef[1] - pq0.coef[1])
+        st = summary_table(pq1)
+        @test nrow(st) == 1
+        ci = confint(pq1)
+        @test ci.lower[1] <= pq1.coef[1] <= ci.upper[1]
+    end
+
+    @testset "QTE recovers location shift" begin
+        # IRM DGP with additive θ ⇒ QTE(τ) ≈ θ for all τ
+        data = make_irm_data(n_obs=1800, dim_x=4, theta=0.5; seed=311)
+        qte = DoubleMLQTE(
+            data,
+            LogisticRegressionLearner(α=0.5),
+            LogisticRegressionLearner(α=0.5);
+            quantiles=[0.5], n_folds=3,
+            trimming_threshold=0.05, rng=MersenneTwister(311),
+        )
+        fit!(qte)
+        @test qte.fitted
+        @test length(qte.coef) == 1
+        # location shift recovery (allow moderate error for quantile + logistic nuisance)
+        @test abs(qte.coef[1] - 0.5) < 0.45
+        @test qte.se[1] > 0
+        st = summary_table(qte)
+        @test nrow(st) == 1
+        # multi-quantile
+        qte2 = DoubleMLQTE(
+            data,
+            LogisticRegressionLearner(α=0.5),
+            LogisticRegressionLearner(α=0.5);
+            quantiles=[0.25, 0.5, 0.75], n_folds=3,
+            trimming_threshold=0.05, rng=MersenneTwister(312),
+        )
+        fit!(qte2)
+        @test length(qte2.coef) == 3
+        @test all(isfinite, qte2.coef)
+        @test length(qte2.modellist_0) == 3
+        @test length(qte2.modellist_1) == 3
+    end
 end

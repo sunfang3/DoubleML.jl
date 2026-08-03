@@ -124,4 +124,27 @@ print_policy_tree(pt)
 pi_hat = predict_policy(pt, data_irm.x[:, 1:3])
 println("share treated by policy: ", round(mean(pi_hat); digits=3))
 
+# ---------- Potential quantiles / QTE ----------
+println("\n## Potential quantile PQ (treatment=1, τ=0.5)")
+pq = DoubleMLPQ(
+    data_irm,
+    LogisticRegressionLearner(α=0.5),
+    LogisticRegressionLearner(α=0.5);
+    treatment=1, quantile=0.5, n_folds=3,
+    trimming_threshold=0.05, rng=MersenneTwister(11),
+)
+fit!(pq)
+println(summary_table(pq))
+
+println("\n## QTE at τ ∈ {0.25, 0.5, 0.75}")
+qte = DoubleMLQTE(
+    data_irm,
+    LogisticRegressionLearner(α=0.5),
+    LogisticRegressionLearner(α=0.5);
+    quantiles=[0.25, 0.5, 0.75], n_folds=3,
+    trimming_threshold=0.05, rng=MersenneTwister(12),
+)
+fit!(qte)
+println(summary_table(qte))
+
 println("\nDone.")

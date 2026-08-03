@@ -104,6 +104,7 @@ model.confint()                →    confint(model)
 | **Sensitivity analysis** | OVB bounds (cf_y, cf_d, rho), RV / RVa (PLR, IRM) | ✅ |
 | **GATE / CATE** | Best linear predictor (`gate` / `cate` → `DoubleMLBLP`) for PLR & IRM | ✅ |
 | **Policy tree** | Weighted classification of IRM score (`policy_tree` → `DoubleMLPolicyTree`) | ✅ |
+| **PQ / QTE** | Potential quantiles & quantile treatment effects (nonlinear DML) | ✅ |
 
 ## Built-in learners
 
@@ -147,6 +148,8 @@ DoubleML/
 │   ├── sensitivity.jl   # OVB sensitivity (Chernozhukov et al. 2022)
 │   ├── blp.jl           # BLP / CATE / GATE
 │   ├── policy_tree.jl   # optimal treatment policy trees (IRM)
+│   ├── pq.jl            # potential quantiles (nonlinear DML)
+│   ├── qte.jl           # quantile treatment effects
 │   └── datasets.jl
 ├── test/runtests.jl
 ├── examples/plr_irm_demo.jl
@@ -236,6 +239,31 @@ summary_table(pt)
 print_policy_tree(pt)
 π = predict_policy(pt, data.x[:, 1:3])   # Vector{Int} in {0,1}
 policy_value(pt)                         # (1/n) Σ (2π−1) ψ̂_b
+```
+
+**Potential quantiles & QTE** (nonlinear DML; binary treatment):
+
+```julia
+# Potential quantile of Y(1) at τ=0.5
+pq = DoubleMLPQ(
+    data_irm,
+    LogisticRegressionLearner(α=0.5),
+    LogisticRegressionLearner(α=0.5);
+    treatment=1, quantile=0.5, n_folds=5, trimming_threshold=0.05,
+)
+fit!(pq)
+summary_table(pq)
+
+# Quantile treatment effects QTE(τ) = θ_τ(1) − θ_τ(0)
+qte = DoubleMLQTE(
+    data_irm,
+    LogisticRegressionLearner(α=0.5),
+    LogisticRegressionLearner(α=0.5);
+    quantiles=[0.25, 0.5, 0.75], n_folds=5, trimming_threshold=0.05,
+)
+fit!(qte)
+summary_table(qte)
+# underlying PQ models: qte.modellist_0 / qte.modellist_1
 ```
 
 ## Run tests

@@ -9,6 +9,8 @@ API-aligned with the Python package [DoubleML](https://docs.doubleml.org/).
 - [`DoubleMLIRM`](@ref) — interactive regression model (binary treatment ATE)
 - [`DoubleMLPLIV`](@ref) — partially linear IV (`:partialX` / `:partialZ` / `:partialXZ`)
 - [`DoubleMLIIVM`](@ref) — interactive IV model (binary D, binary Z → LATE)
+- [`DoubleMLPQ`](@ref) — potential quantiles (binary treatment)
+- [`DoubleMLQTE`](@ref) — quantile treatment effects
 
 # Inference
 - Pointwise: `confint(m)`
@@ -58,6 +60,8 @@ export
     DoubleMLPLIV_partialZ,
     DoubleMLPLIV_partialXZ,
     DoubleMLIIVM,
+    DoubleMLPQ,
+    DoubleMLQTE,
     confint,
     summary_table,
     dml_summary,
@@ -104,6 +108,8 @@ include("pliv.jl")
 include("iivm.jl")
 include("blp.jl")        # BLP / cate / gate (needs PLR & IRM)
 include("policy_tree.jl")  # policy learning (needs IRM + orth signal)
+include("pq.jl")         # potential quantiles (nonlinear DML)
+include("qte.jl")        # quantile treatment effects
 include("tune.jl")
 include("datasets.jl")
 

@@ -113,14 +113,26 @@ def main():
             jb = (jc[i] - th) if i < len(jc) else None
             lines.append(f"| {key if i==0 else ''} | {i} | {fmt(th)} | {fmt(pb)} | {fmt(jb)} |\n")
 
-    # summary stats
-    rels = [r[3] for r in rows if r[3] is not None]
-    dcoefs = [r[2] for r in rows if r[2] is not None]
+    # summary stats (exclude DID_multi from max/median — near-zero cells inflate rel)
+    main_rows = [r for r in rows if r[0] != "DID_multi"]
+    rels = [r[3] for r in main_rows if r[3] is not None]
+    dcoefs = [r[2] for r in main_rows if r[2] is not None]
     lines.append("\n## Summary\n\n")
     if rels:
-        lines.append(f"- Median relative |Δcoef|: **{sorted(rels)[len(rels)//2]:.2e}**\n")
-        lines.append(f"- Max relative |Δcoef|: **{max(rels):.2e}**\n")
-        lines.append(f"- Median |Δcoef|: **{sorted(dcoefs)[len(dcoefs)//2]:.2e}**\n")
+        lines.append(f"- Median relative |Δcoef| (excl. DID multi): **{sorted(rels)[len(rels)//2]:.2e}**\n")
+        lines.append(f"- Max relative |Δcoef| (excl. DID multi): **{max(rels):.2e}**\n")
+        lines.append(f"- Median |Δcoef| (excl. DID multi): **{sorted(dcoefs)[len(dcoefs)//2]:.2e}**\n")
+        within30 = sum(1 for r in rels if r <= 0.30)
+        lines.append(f"- Main-model cells within 30% rel Δ: **{within30}/{len(rels)}**\n")
+    if "DID_multi" in py_m and "DID_multi" in jl_m:
+        pc = np.asarray(py_m["DID_multi"].get("coef") or [], float)
+        jc = np.asarray(jl_m["DID_multi"].get("coef") or [], float)
+        if len(pc) and len(jc) == len(pc):
+            dm_rel = np.abs(pc - jc) / np.maximum(np.abs(pc), 1e-12)
+            lines.append(
+                f"- DID multi: n_ATT={len(pc)}, median cell rel={np.median(dm_rel):.2e}, "
+                f"frac ≤30%={(dm_rel <= 0.30).mean():.0%}\n"
+            )
     # timing totals
     py_tot = sum(py_m[k].get("seconds") or 0 for k in py_m if isinstance(py_m[k].get("seconds"), (int, float)))
     jl_tot = sum(jl_m[k].get("seconds") or 0 for k in jl_m if isinstance(jl_m[k].get("seconds"), (int, float)))

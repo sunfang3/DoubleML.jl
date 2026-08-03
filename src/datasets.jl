@@ -142,6 +142,53 @@ function make_pliv_data(; n_obs::Int=500, dim_x::Int=20, dim_z::Int=1,
 end
 
 """
+    make_pliv_cluster_data(; n_obs=800, n_clusters=(20, 20), dim_x=5, dim_z=1,
+                           theta=1.0, seed=nothing)
+
+One- or two-way clustered PLIV DGP (spirit of multiway cluster CKMS2021).
+
+`n_clusters` is an `Int` (one-way) or length-2 tuple (two-way).
+"""
+function make_pliv_cluster_data(; n_obs::Int=800,
+                                n_clusters::Union{Int,Tuple{Int,Int}}=40,
+                                dim_x::Int=5, dim_z::Int=1,
+                                theta::Real=1.0, seed=nothing)
+    rng = seed === nothing ? Random.default_rng() : MersenneTwister(seed)
+    dim_z >= 1 || throw(ArgumentError("dim_z ≥ 1"))
+    X = randn(rng, n_obs, dim_x)
+    Z = randn(rng, n_obs, dim_z)
+    if n_clusters isa Integer
+        n_c = Int(n_clusters)
+        n_c >= 4 || throw(ArgumentError("n_clusters ≥ 4"))
+        cl1 = repeat(1:n_c, inner=max(1, n_obs ÷ n_c))
+        while length(cl1) < n_obs; push!(cl1, n_c); end
+        cl1 = cl1[1:n_obs]
+        α = randn(rng, n_c)
+        a = α[cl1]
+        d = 0.5 .* X[:, 1] .+ Z[:, 1] .+ 0.4 .* a .+ randn(rng, n_obs)
+        y = theta .* d .+ X[:, 1] .+ a .+ randn(rng, n_obs)
+        return DoubleMLData(X, y, d; y_col="y", d_col="d", z=Z, z_cols=["Z$i" for i in 1:dim_z],
+                            cluster=cl1, cluster_cols="cluster")
+    else
+        n1, n2 = Int(n_clusters[1]), Int(n_clusters[2])
+        n1 >= 4 && n2 >= 4 || throw(ArgumentError("each n_clusters dim ≥ 4"))
+        # balanced grid-ish assignment
+        cl1 = [((i - 1) % n1) + 1 for i in 1:n_obs]
+        cl2 = [((i - 1) ÷ max(1, n_obs ÷ n2)) % n2 + 1 for i in 1:n_obs]
+        # shuffle for less regular structure
+        cl1 = cl1[randperm(rng, n_obs)]
+        cl2 = cl2[randperm(rng, n_obs)]
+        α = randn(rng, n1); β = randn(rng, n2)
+        a = α[cl1] .+ β[cl2]
+        d = 0.5 .* X[:, 1] .+ Z[:, 1] .+ 0.3 .* a .+ randn(rng, n_obs)
+        y = theta .* d .+ X[:, 1] .+ a .+ randn(rng, n_obs)
+        cl = hcat(cl1, cl2)
+        return DoubleMLData(X, y, d; y_col="y", d_col="d", z=Z, z_cols=["Z$i" for i in 1:dim_z],
+                            cluster=cl, cluster_cols=["cluster1", "cluster2"])
+    end
+end
+
+"""
     make_iivm_data(; n_obs=1000, dim_x=10, theta=0.5, seed=nothing)
 
 Synthetic **interactive IV / LATE** data with binary treatment and binary instrument.

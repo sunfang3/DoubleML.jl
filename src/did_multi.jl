@@ -17,6 +17,40 @@ Alias: long panel via [`DoubleMLData`](@ref) with `id` and `t` set.
 """
 const DoubleMLPanelData = DoubleMLData
 
+"""
+    recode_never_treated(d; from=0.0, to=Inf) -> Vector
+
+Map never-treated codes for Python float-panel parity (`0` ↔ `+Inf`).
+Works on a treatment-timing vector (first-treatment period).
+"""
+function recode_never_treated(d::AbstractVector; from::Real=0.0, to::Real=Inf)
+    out = Float64.(d)
+    if isfinite(from)
+        out[isapprox.(out, Float64(from); atol=0)] .= Float64(to)
+    else
+        out[.!isfinite.(out)] .= Float64(to)
+    end
+    return out
+end
+
+"""
+    recode_never_treated(data::DoubleMLData; from=0.0, to=Inf) -> DoubleMLData
+
+Return a copy of panel data with never-treated codes remapped in `d` / `d_mat`.
+"""
+function recode_never_treated(data::DoubleMLData; from::Real=0.0, to::Real=Inf)
+    d_new = recode_never_treated(data.d; from=from, to=to)
+    return DoubleMLData(
+        data.x, data.y, d_new;
+        y_col=data.y_col, d_cols=data.d_cols, x_cols=data.x_cols,
+        z=data.z, z_cols=data.z_cols,
+        s=data.s, s_col=data.s_col,
+        id=data.id, t=data.t, score=data.score,
+        cluster=data.cluster, cluster_cols=data.cluster_cols,
+        use_other_treat_as_covariate=data.use_other_treat_as_covariate,
+    )
+end
+
 # ---- helpers ----------------------------------------------------------------
 
 """

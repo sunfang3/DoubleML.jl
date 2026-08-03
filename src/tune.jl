@@ -680,3 +680,169 @@ function tune_optuna!(m::DoubleMLIRM;
     return results
 end
 
+
+function tune_optuna!(m::DoubleMLPLIV;
+                      param_spaces::AbstractDict,
+                      n_trials::Int=30,
+                      n_startup::Int=10,
+                      n_folds_tune::Int=5,
+                      rng::Union{Nothing,AbstractRNG}=nothing)
+    rng = rng === nothing ? m.rng : rng
+    data = m.data
+    X, y, d = data.x, data.y, data.d
+    Z = data.z
+    results = Dict{Symbol,DMLOptunaResult}()
+    if m.partial_mode == :partialZ
+        XZ = hcat(X, Z)
+        if haskey(param_spaces, :ml_r) && m.ml_r !== nothing
+            best, res = tune_learner_optuna(m.ml_r, XZ, d, param_spaces[:ml_r];
+                                            n_trials=n_trials, n_startup=n_startup,
+                                            n_folds=n_folds_tune, rng=rng, classifier=false)
+            m.ml_r = best; results[:ml_r] = res
+        end
+    else
+        if haskey(param_spaces, :ml_l) && m.ml_l !== nothing
+            best, res = tune_learner_optuna(m.ml_l, X, y, param_spaces[:ml_l];
+                                            n_trials=n_trials, n_startup=n_startup,
+                                            n_folds=n_folds_tune, rng=rng, classifier=false)
+            m.ml_l = best; results[:ml_l] = res
+        end
+        if m.partial_mode == :partialX
+            if haskey(param_spaces, :ml_r) && m.ml_r !== nothing
+                best, res = tune_learner_optuna(m.ml_r, X, d, param_spaces[:ml_r];
+                                                n_trials=n_trials, n_startup=n_startup,
+                                                n_folds=n_folds_tune, rng=rng, classifier=false)
+                m.ml_r = best; results[:ml_r] = res
+            end
+            if haskey(param_spaces, :ml_m) && m.ml_m !== nothing
+                z = n_instr(data) == 1 ? vec(Z) : Z[:, 1]
+                best, res = tune_learner_optuna(m.ml_m, X, z, param_spaces[:ml_m];
+                                                n_trials=n_trials, n_startup=n_startup,
+                                                n_folds=n_folds_tune, rng=rng, classifier=false)
+                m.ml_m = best; results[:ml_m] = res
+            end
+            if haskey(param_spaces, :ml_g) && m.ml_g !== nothing
+                best, res = tune_learner_optuna(m.ml_g, X, y, param_spaces[:ml_g];
+                                                n_trials=n_trials, n_startup=n_startup,
+                                                n_folds=n_folds_tune, rng=rng, classifier=false)
+                m.ml_g = best; results[:ml_g] = res
+            end
+        elseif m.partial_mode == :partialXZ
+            XZ = hcat(X, Z)
+            if haskey(param_spaces, :ml_m) && m.ml_m !== nothing
+                best, res = tune_learner_optuna(m.ml_m, XZ, d, param_spaces[:ml_m];
+                                                n_trials=n_trials, n_startup=n_startup,
+                                                n_folds=n_folds_tune, rng=rng, classifier=false)
+                m.ml_m = best; results[:ml_m] = res
+            end
+            if haskey(param_spaces, :ml_r) && m.ml_r !== nothing
+                folds = make_folds(n_obs(data), n_folds_tune; rng=rng)
+                mhat = cross_fit_predict(m.ml_m, XZ, d, folds)
+                best, res = tune_learner_optuna(m.ml_r, X, mhat, param_spaces[:ml_r];
+                                                n_trials=n_trials, n_startup=n_startup,
+                                                n_folds=n_folds_tune, rng=rng, classifier=false)
+                m.ml_r = best; results[:ml_r] = res
+            end
+        end
+    end
+    m.fitted = false
+    m.boot = nothing
+    return results
+end
+
+function tune_optuna!(m::DoubleMLIIVM;
+                      param_spaces::AbstractDict,
+                      n_trials::Int=30,
+                      n_startup::Int=10,
+                      n_folds_tune::Int=5,
+                      rng::Union{Nothing,AbstractRNG}=nothing)
+    rng = rng === nothing ? m.rng : rng
+    data = m.data
+    X, y, d = data.x, data.y, data.d
+    z = vec(data.z)
+    results = Dict{Symbol,DMLOptunaResult}()
+    if haskey(param_spaces, :ml_g)
+        best, res = tune_learner_optuna(m.ml_g, X, y, param_spaces[:ml_g];
+                                        n_trials=n_trials, n_startup=n_startup,
+                                        n_folds=n_folds_tune, rng=rng, classifier=false)
+        m.ml_g = best; results[:ml_g] = res
+    end
+    if haskey(param_spaces, :ml_m)
+        best, res = tune_learner_optuna(m.ml_m, X, z, param_spaces[:ml_m];
+                                        n_trials=n_trials, n_startup=n_startup,
+                                        n_folds=n_folds_tune, rng=rng, classifier=true)
+        m.ml_m = best; results[:ml_m] = res
+    end
+    if haskey(param_spaces, :ml_r)
+        best, res = tune_learner_optuna(m.ml_r, X, d, param_spaces[:ml_r];
+                                        n_trials=n_trials, n_startup=n_startup,
+                                        n_folds=n_folds_tune, rng=rng, classifier=true)
+        m.ml_r = best; results[:ml_r] = res
+    end
+    m.fitted = false
+    m.boot = nothing
+    return results
+end
+
+function tune_optuna!(m::DoubleMLSSM;
+                      param_spaces::AbstractDict,
+                      n_trials::Int=30,
+                      n_startup::Int=10,
+                      n_folds_tune::Int=5,
+                      rng::Union{Nothing,AbstractRNG}=nothing)
+    rng = rng === nothing ? m.rng : rng
+    data = m.data
+    X, y, d, s = data.x, data.y, data.d, data.s
+    results = Dict{Symbol,DMLOptunaResult}()
+    if haskey(param_spaces, :ml_g)
+        # outcome among selected
+        sel = s .== 1
+        best, res = tune_learner_optuna(m.ml_g, X[sel, :], y[sel], param_spaces[:ml_g];
+                                        n_trials=n_trials, n_startup=n_startup,
+                                        n_folds=n_folds_tune, rng=rng, classifier=false)
+        m.ml_g = best; results[:ml_g] = res
+    end
+    if haskey(param_spaces, :ml_m)
+        best, res = tune_learner_optuna(m.ml_m, X, d, param_spaces[:ml_m];
+                                        n_trials=n_trials, n_startup=n_startup,
+                                        n_folds=n_folds_tune, rng=rng, classifier=true)
+        m.ml_m = best; results[:ml_m] = res
+    end
+    if haskey(param_spaces, :ml_pi)
+        Xd = hcat(X, d)
+        best, res = tune_learner_optuna(m.ml_pi, Xd, s, param_spaces[:ml_pi];
+                                        n_trials=n_trials, n_startup=n_startup,
+                                        n_folds=n_folds_tune, rng=rng, classifier=true)
+        m.ml_pi = best; results[:ml_pi] = res
+    end
+    m.fitted = false
+    m.boot = nothing
+    return results
+end
+
+function tune_optuna!(m::DoubleMLDID;
+                      param_spaces::AbstractDict,
+                      n_trials::Int=30,
+                      n_startup::Int=10,
+                      n_folds_tune::Int=5,
+                      rng::Union{Nothing,AbstractRNG}=nothing)
+    rng = rng === nothing ? m.rng : rng
+    data = m.data
+    X, y, d = data.x, data.y, data.d
+    results = Dict{Symbol,DMLOptunaResult}()
+    if haskey(param_spaces, :ml_g)
+        best, res = tune_learner_optuna(m.ml_g, X, y, param_spaces[:ml_g];
+                                        n_trials=n_trials, n_startup=n_startup,
+                                        n_folds=n_folds_tune, rng=rng, classifier=false)
+        m.ml_g = best; results[:ml_g] = res
+    end
+    if haskey(param_spaces, :ml_m) && m.ml_m !== nothing
+        best, res = tune_learner_optuna(m.ml_m, X, d, param_spaces[:ml_m];
+                                        n_trials=n_trials, n_startup=n_startup,
+                                        n_folds=n_folds_tune, rng=rng, classifier=true)
+        m.ml_m = best; results[:ml_m] = res
+    end
+    m.fitted = false
+    m.boot = nothing
+    return results
+end

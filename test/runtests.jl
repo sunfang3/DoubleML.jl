@@ -1298,6 +1298,65 @@ using Statistics
         end
     end
 
+    @testset "SSM nested_random_state + tune_optuna extensions + cluster PLIV" begin
+        # nonignorable with fixed nested_random_state=42 (Python default)
+        sdata = make_ssm_data(n_obs=600, dim_x=3, theta=1.0; nonignorable=true, seed=990)
+        ssm = DoubleMLSSM(sdata, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5),
+                          LogisticRegressionLearner(α=0.5);
+                          score="nonignorable", n_folds=3, nested_random_state=42,
+                          rng=MersenneTwister(990))
+        @test ssm.nested_random_state == 42
+        fit!(ssm)
+        @test isfinite(ssm.coef[1])
+        # deterministic nested splits under same outer folds
+        ssm2 = DoubleMLSSM(sdata, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5),
+                           LogisticRegressionLearner(α=0.5);
+                           score="nonignorable", n_folds=3, nested_random_state=42,
+                           draw_sample_splitting=false, rng=MersenneTwister(991))
+        ssm2.smpls = ssm.smpls
+        fit!(ssm2)
+        @test ssm2.coef[1] ≈ ssm.coef[1] atol=1e-10
+
+        # tune_optuna! DID / PLIV smoke
+        ddata = make_did_data(n_obs=350, theta=-1.0; seed=992)
+        did = DoubleMLDID(ddata, RidgeLearner(α=1.0), LogisticRegressionLearner(α=1.0);
+                          n_folds=3, rng=MersenneTwister(992))
+        tres = tune_optuna!(did; param_spaces=Dict(:ml_g => Dict(:α => (0.1, 5.0, :log))),
+                            n_trials=6, n_startup=3, n_folds_tune=3, rng=MersenneTwister(992))
+        @test haskey(tres, :ml_g)
+        fit!(did)
+        @test isfinite(did.coef[1])
+
+        iv = make_pliv_data(n_obs=400, dim_x=4, dim_z=1, theta=0.5; seed=993)
+        ml = RidgeLearner(α=1.0)
+        pliv = DoubleMLPLIV(iv, clone(ml), clone(ml), clone(ml); n_folds=3, rng=MersenneTwister(993))
+        tres2 = tune_optuna!(pliv; param_spaces=Dict(:ml_l => Dict(:α => [0.1, 1.0, 5.0])),
+                             n_trials=5, n_folds_tune=3, rng=MersenneTwister(993))
+        @test haskey(tres2, :ml_l)
+
+        # two-way cluster PLIV
+        cdata = make_pliv_cluster_data(n_obs=600, n_clusters=(12, 10), dim_x=3, dim_z=1,
+                                       theta=1.0; seed=994)
+        @test size(cdata.cluster, 2) == 2
+        mlc = RidgeLearner(α=0.5)
+        plivc = DoubleMLPLIV(cdata, clone(mlc), clone(mlc), clone(mlc);
+                             n_folds=3, rng=MersenneTwister(994))
+        fit!(plivc)
+        @test isfinite(plivc.coef[1])
+        @test plivc.is_cluster_data
+        @test plivc.se[1] > 0
+
+        # recode never-treated helper
+        base = make_did_panel_data(n_id=60, n_t=4, dim_x=2, theta=1.0; seed=995)
+        data_inf = recode_never_treated(base; from=0.0, to=Inf)
+        @test any(isinf, data_inf.d)
+        multi = DoubleMLDIDMulti(data_inf, RidgeLearner(α=0.5), LogisticRegressionLearner(α=0.5);
+                                 n_folds=3, rng=MersenneTwister(995))
+        @test isinf(multi.never_treated_value)
+        fit!(multi)
+        @test multi.fitted
+    end
+
     @testset "APO PSProcessor + multi-θ sensitivity + Inf never-treated" begin
         # APO with PSProcessor
         idata = make_irm_data(n_obs=500, dim_x=3, theta=0.5; seed=980)

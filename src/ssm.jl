@@ -33,6 +33,8 @@ mutable struct DoubleMLSSM <: AbstractDoubleML
     trimming_threshold::Float64
     ps_processor::PSProcessor
     normalize_ipw::Bool
+    # Python nonignorable nested CF uses train_test_split(..., random_state=42)
+    nested_random_state::Int
     smpls::Vector
     coef::Vector{Float64}
     se::Vector{Float64}
@@ -56,6 +58,7 @@ function DoubleMLSSM(data::DoubleMLData, ml_g, ml_m, ml_pi;
                      trimming_threshold::Real=1e-2,
                      ps_processor::Union{Nothing,PSProcessor}=nothing,
                      normalize_ipw::Bool=false,
+                     nested_random_state::Integer=42,
                      draw_sample_splitting::Bool=true,
                      rng::AbstractRNG=Random.default_rng())
     sc = String(score)
@@ -75,7 +78,7 @@ function DoubleMLSSM(data::DoubleMLData, ml_g, ml_m, ml_pi;
     psp = resolve_ps_processor(ps_processor, trimming_threshold)
     return DoubleMLSSM(
         data, ml_g, ml_m, ml_pi, n_folds, n_rep, sc, Float64(trimming_threshold),
-        psp, normalize_ipw, smpls,
+        psp, normalize_ipw, Int(nested_random_state), smpls,
         Float64[], Float64[],
         zeros(1, n_rep), zeros(1, n_rep),
         fill(NaN, n, n_rep, 1), fill(NaN, n, n_rep, 1),
@@ -98,27 +101,52 @@ function _cross_fit_g_sel(ml_g, X, y, d, s, d_level, folds)
     return g
 end
 
-"""Stratified 50/50 split of train indices by strata vector."""
-function _stratified_half_split(train::AbstractVector{Int}, strata::AbstractVector, rng::AbstractRNG)
-    # strata typically d + 2*s ∈ {0,1,2,3}
+"""
+Stratified 50/50 split of `train` indices (Python
+`train_test_split(..., test_size=0.5, stratify=..., random_state=nested_random_state)`).
+
+# Notes
+- Each call should use a **fresh** RNG seeded with the same `random_state` (Python
+  reseeds every fold to 42).
+- Per-stratum: shuffle then put first `floor(n/2)` into half1 (fit π), rest into half2
+  (fit m/g). Rare strata with 1 obs go to half1 (π), matching sklearn's "need ≥2 for
+  stratify" by falling back gracefully.
+"""
+function _stratified_half_split(train::AbstractVector{Int}, strata::AbstractVector,
+                                rng::AbstractRNG)
     g1 = Int[]; g2 = Int[]
-    for lab in unique(strata[train])
+    # stable order of labels like sklearn's unique order of appearance after sort
+    labs = sort(unique(strata[train]))
+    for lab in labs
         idx = train[strata[train] .== lab]
-        idx = Random.shuffle(rng, idx)
-        mid = max(1, length(idx) ÷ 2)
-        # ensure both non-empty when possible
-        if length(idx) == 1
+        n = length(idx)
+        if n == 0
+            continue
+        elseif n == 1
+            # cannot stratify 50/50; put sole obs in half1 (π), leave half2 empty for this stratum
             push!(g1, idx[1])
-        else
-            append!(g1, idx[1:mid])
-            append!(g2, idx[mid+1:end])
+            continue
         end
+        idx = Random.shuffle(rng, collect(idx))
+        # sklearn test_size=0.5 → n_test ≈ n/2 goes to "test" (half2), rest to train (half1)
+        n_test = n ÷ 2                    # floor, matches int(n*0.5) for even/odd
+        n_train = n - n_test
+        # half1 = train_inds_1 (π), half2 = train_inds_2 (m,g)
+        append!(g1, idx[1:n_train])
+        append!(g2, idx[(n_train + 1):end])
+    end
+    # if half2 empty (all strata size 1), move half of g1 over
+    if isempty(g2) && length(g1) >= 2
+        mid = length(g1) ÷ 2
+        g2 = g1[(mid + 1):end]
+        g1 = g1[1:mid]
     end
     return sort(g1), sort(g2)
 end
 
 """Nested CF for nonignorable SSM (Python DoubleMLSSM score='nonignorable')."""
-function _ssm_nonignorable_nuisance(ml_g, ml_m, ml_pi, X, y, d, s, z, folds, ε, rng;
+function _ssm_nonignorable_nuisance(ml_g, ml_m, ml_pi, X, y, d, s, z, folds, ε;
+                                    nested_random_state::Int=42,
                                     store_models::Bool=false)
     n = length(y)
     π̂ = fill(NaN, n)
@@ -130,10 +158,15 @@ function _ssm_nonignorable_nuisance(ml_g, ml_m, ml_pi, X, y, d, s, z, folds, ε,
     ) : nothing
 
     dx = hcat(X, d, z)
-    strata = d .+ 2 .* s  # 0,1,2,3
+    strata = Int.(d .+ 2 .* s)  # 0,1,2,3
 
     for (train, test) in folds
-        tr1, tr2 = _stratified_half_split(train, strata, rng)
+        # Python: train_test_split(..., random_state=42) — reseed every fold
+        rng_nest = MersenneTwister(nested_random_state)
+        tr1, tr2 = _stratified_half_split(train, strata, rng_nest)
+        isempty(tr1) && error("Empty nested half1 for π — check strata balance")
+        isempty(tr2) && error("Empty nested half2 for m/g — check strata balance")
+
         # half 1: fit π = P(S=1 | D,X,Z)
         mpi = clone(ml_pi)
         fit!(mpi, dx[tr1, :], s[tr1])
@@ -205,7 +238,8 @@ function fit!(m::DoubleMLSSM; store_predictions::Bool=true, store_models::Bool=f
         else
             z = instrument(data)
             π̂, m̂, g0, g1, fold_models = _ssm_nonignorable_nuisance(
-                m.ml_g, m.ml_m, m.ml_pi, X, y_safe, d, s, z, folds, ε, m.rng;
+                m.ml_g, m.ml_m, m.ml_pi, X, y_safe, d, s, z, folds, ε;
+                nested_random_state=m.nested_random_state,
                 store_models=store_models,
             )
         end

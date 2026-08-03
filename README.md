@@ -131,7 +131,10 @@ model.confint()                →    confint(model)
 | **fetch_401K / fetch_bonus** | Real datasets (network + pandas on first download) | ✅ |
 | **APO PSProcessor** | Propensity clip on APO / APOS | ✅ |
 | **Multi-θ sensitivity** | Per-treatment OVB bounds + Framework multi-θ | ✅ |
-| **DID multi Inf never-treated** | Auto-detect `+Inf` / `0` never-treated coding | ✅ |
+| **DID multi Inf never-treated** | Auto-detect `+Inf` / `0`; `recode_never_treated` helper | ✅ |
+| **SSM nested_random_state** | Nonignorable nested half-splits reseed like Python `random_state=42` | ✅ |
+| **tune_optuna! PLIV/IIVM/SSM/DID** | Optuna-style spaces on more models | ✅ |
+| **make_pliv_cluster_data** | One-/two-way clustered PLIV DGP | ✅ |
 | **SSM** | Sample selection (`missing-at-random` / basic `nonignorable`) | ✅ |
 | **RDD** | Sharp/fuzzy RD with ML residualization + local linear | ✅ |
 | **Cluster SE** | One-way post-hoc + **cluster-in-fit** (1/2-way) for PLR/IRM | ✅ |

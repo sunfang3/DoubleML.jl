@@ -61,7 +61,11 @@ function DoubleMLIRM(data::DoubleMLData, ml_g, ml_m;
         nothing
     else
         length(weights) == n || throw(DimensionMismatch("weights length must equal n"))
-        Float64.(weights)
+        ww = Float64.(weights)
+        all(isfinite, ww) || throw(ArgumentError("weights must be finite"))
+        all(>=(0), ww) || throw(ArgumentError("weights must be nonnegative"))
+        sum(ww) > 0 || throw(ArgumentError("weights must have positive sum"))
+        ww
     end
 
     is_cl = is_cluster_data(data)
@@ -205,7 +209,9 @@ function fit!(m::DoubleMLIRM; store_predictions::Bool=true,
                 psi_a = fill(-1.0, n)
                 psi_b = dr
             else
-                p = mean(d)
+                score_weights = m.weights === nothing ? ones(n) : m.weights
+                p = sum(score_weights .* d) / sum(score_weights)
+                p > 0 || throw(ArgumentError("weighted ATTE requires positive treated weight"))
                 dr = d ./ p .* (g1 .- g0) .+
                      d ./ p .* (y .- g1) .-
                      m̂ ./ p .* (1 .- d) ./ (1 .- m̂) .* (y .- g0)
@@ -236,7 +242,7 @@ function fit!(m::DoubleMLIRM; store_predictions::Bool=true,
                 g1_preds[:, r] = g1
                 m_preds[:, r] = m̂
             end
-            if !is_callable_score(m.score)
+            if !is_callable_score(m.score) && m.weights === nothing
                 σ2, ν2, ps, pn, rr = sensitivity_elements_irm_ate(y, d, g0, g1, m̂)
                 sigma2_v[r] = σ2
                 nu2_v[r] = ν2
@@ -245,7 +251,7 @@ function fit!(m::DoubleMLIRM; store_predictions::Bool=true,
                 rr_m[:, r] = rr
             end
         end
-        if !is_callable_score(m.score)
+        if !is_callable_score(m.score) && m.weights === nothing
             push!(sens_list, SensitivityElements(sigma2_v, nu2_v, psi_s, psi_n, rr_m))
         end
     end

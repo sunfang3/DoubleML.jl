@@ -68,15 +68,41 @@ function DoubleMLData(x::AbstractMatrix, y::AbstractVector, d;
 
     xc = x_cols === nothing ? ["X$i" for i in 1:p] : String.(collect(x_cols))
     length(xc) == p || throw(ArgumentError("x_cols length must equal p"))
-    zmat = z === nothing ? nothing : Matrix{Float64}(z)
-    zc = z_cols === nothing ? nothing : String.(collect(z_cols))
+    if z === nothing && z_cols !== nothing
+        throw(ArgumentError("z_cols provided but z is missing"))
+    end
+    zmat = if z === nothing
+        nothing
+    elseif z isa AbstractVector
+        length(z) == n || throw(DimensionMismatch("z length must match n_obs"))
+        reshape(Float64.(z), n, 1)
+    else
+        size(z, 1) == n || throw(DimensionMismatch("z rows must match n_obs"))
+        Matrix{Float64}(z)
+    end
+    if zmat !== nothing && size(zmat, 2) < 1
+        throw(ArgumentError("z must have at least one column"))
+    end
+    zc = if zmat === nothing
+        nothing
+    elseif z_cols === nothing
+        ["Z$i" for i in 1:size(zmat, 2)]
+    else
+        names = String.(collect(z_cols))
+        length(names) == size(zmat, 2) ||
+            throw(ArgumentError("z_cols length must equal n_instr=$(size(zmat, 2))"))
+        names
+    end
     svec = s === nothing ? nothing : Float64.(s)
     if svec !== nothing
         length(svec) == n || throw(DimensionMismatch("s length"))
     end
-    idv = id === nothing ? nothing : Int.(id)
-    tv = t === nothing ? nothing : Int.(t)
-    sc = score === nothing ? nothing : Float64.(score)
+    idv = id === nothing ? nothing : Int.(collect(id))
+    tv = t === nothing ? nothing : Int.(collect(t))
+    sc = score === nothing ? nothing : Float64.(collect(score))
+    idv !== nothing && length(idv) != n && throw(DimensionMismatch("id length"))
+    tv !== nothing && length(tv) != n && throw(DimensionMismatch("t length"))
+    sc !== nothing && length(sc) != n && throw(DimensionMismatch("score length"))
 
     cl, clc = _parse_cluster(cluster, cluster_cols, n)
 
@@ -230,7 +256,7 @@ function design_for_treatment(data::DoubleMLData, j::Int)
 end
 
 function Base.show(io::IO, data::DoubleMLData)
-    zinfo = data.z === nothing ? "none" : join(data.z_cols, ",")
+    zinfo = data.z === nothing ? "none" : join(data.z_cols::Vector{String}, ",")
     dinfo = join(data.d_cols, ",")
     clinfo = data.cluster_cols === nothing ? "none" : join(data.cluster_cols, ",")
     print(io, "DoubleMLData(n=$(n_obs(data)), p=$(n_features(data)), ",

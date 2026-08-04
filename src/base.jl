@@ -41,18 +41,18 @@ function confint(m::AbstractDoubleML; level::Real=0.95, joint::Bool=false)
         # max |t| over coefficients, per bootstrap draw and rep → quantiles per rep
         # boot_t_stat: (n_rep_boot, n_coefs, n_rep)
         max_abs = maximum(abs.(m.boot.boot_t_stat); dims=2)  # (n_rep_boot, 1, n_rep)
-        crit = [quantile(vec(max_abs[:, 1, r]), level) for r in 1:n_rep]
+        crit_reps = [quantile(vec(max_abs[:, 1, r]), level) for r in 1:n_rep]
+        crit = median(crit_reps)
     else
         α = 1 - level
         z = quantile(Normal(), 1 - α / 2)
-        crit = fill(z, n_rep)
+        crit = z
     end
 
-    # CI per rep then median-aggregate (Python DoubleML)
-    lower_reps = m.all_coef .- m.all_se .* reshape(crit, 1, n_rep)
-    upper_reps = m.all_coef .+ m.all_se .* reshape(crit, 1, n_rep)
-    lower = vec(median(lower_reps; dims=2))
-    upper = vec(median(upper_reps; dims=2))
+    # Use the same repeated-split aggregation as coef/se.  In particular,
+    # m.se includes between-split variability when n_rep > 1.
+    lower = m.coef .- crit .* m.se
+    upper = m.coef .+ crit .* m.se
 
     return DataFrame(
         treatment = m.treat_names,
@@ -94,14 +94,72 @@ const dml_summary = summary_table
 Set external sample splits (Python `set_sample_splitting`).
 `smpls` is a vector of length `n_rep`, each entry a vector of
 `(train=..., test=...)` fold named tuples covering `1:n`.
+For clustered models, pass the matching `smpls_cluster` keyword returned by
+`init_sample_splitting`; ordinary observation folds are not sufficient for
+cluster-robust variance estimation.
 """
-function set_sample_splitting!(m::AbstractDoubleML, smpls)
+function _validate_sample_splitting(smpls, n::Int, n_rep::Int)
+    length(smpls) == n_rep ||
+        throw(ArgumentError("smpls length $(length(smpls)) must equal n_rep=$n_rep"))
+    for (r, folds) in enumerate(smpls)
+        isempty(folds) && throw(ArgumentError("smpls[$r] must contain at least one fold"))
+        seen = zeros(Int, n)
+        for (k, fold) in enumerate(folds)
+            hasproperty(fold, :train) && hasproperty(fold, :test) ||
+                throw(ArgumentError("smpls[$r][$k] must have train and test fields"))
+            train = collect(fold.train)
+            test = collect(fold.test)
+            all(i -> 1 <= i <= n, train) || throw(ArgumentError("train indices out of bounds in smpls[$r][$k]"))
+            all(i -> 1 <= i <= n, test) || throw(ArgumentError("test indices out of bounds in smpls[$r][$k]"))
+            isempty(intersect(train, test)) ||
+                throw(ArgumentError("train and test overlap in smpls[$r][$k]"))
+            seen[test] .+= 1
+        end
+        all(seen .== 1) ||
+            throw(ArgumentError("test folds in smpls[$r] must cover each observation exactly once"))
+    end
+    return nothing
+end
+
+function _validate_cluster_sample_splitting(smpls_cluster, smpls, n_rep::Int)
+    length(smpls_cluster) == n_rep ||
+        throw(ArgumentError("smpls_cluster length must equal n_rep=$n_rep"))
+    for r in 1:n_rep
+        length(smpls_cluster[r]) == length(smpls[r]) ||
+            throw(ArgumentError("smpls_cluster[$r] must match the number of observation folds"))
+        for (k, fold) in enumerate(smpls_cluster[r])
+            hasproperty(fold, :test_ids) && hasproperty(fold, :train_ids) ||
+                throw(ArgumentError("smpls_cluster[$r][$k] must have train_ids and test_ids"))
+        end
+    end
+    return nothing
+end
+
+function set_sample_splitting!(m::AbstractDoubleML, smpls; smpls_cluster=nothing)
     hasproperty(m, :smpls) || error("Model does not support sample splitting")
-    length(smpls) == m.n_rep ||
-        throw(ArgumentError("smpls length $(length(smpls)) must equal n_rep=$(m.n_rep)"))
+    _validate_sample_splitting(smpls, n_obs(m.data), m.n_rep)
+    if hasproperty(m, :smpls_cluster)
+        is_cl = hasproperty(m, :is_cluster_data) && m.is_cluster_data === true
+        if is_cl
+            smpls_cluster === nothing && throw(ArgumentError(
+                "clustered models require matching smpls_cluster when setting sample splits"))
+            _validate_cluster_sample_splitting(smpls_cluster, smpls, m.n_rep)
+        elseif smpls_cluster !== nothing
+            throw(ArgumentError("smpls_cluster is only valid for clustered models"))
+        end
+        m.smpls_cluster = smpls_cluster
+    elseif smpls_cluster !== nothing
+        throw(ArgumentError("model does not support cluster sample splitting"))
+    end
     m.smpls = smpls
     m.fitted = false
     return m
+end
+
+"""Use external predictions without evaluating the fallback fit eagerly."""
+function _external_or_fit(fallback::Function, external, key::AbstractString, rep::Int, n::Int)
+    pred = _apply_external_pred(external, key, rep, n)
+    return pred === nothing ? fallback() : pred
 end
 
 """

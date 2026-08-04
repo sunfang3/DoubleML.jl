@@ -39,6 +39,10 @@ function bootstrap!(m::AbstractDoubleML; method::AbstractString="normal",
     boot_t = fill(NaN, n_rep_boot, n_coef, n_rep)
 
     for r in 1:n_rep
+        # The same multiplier draw must be used for every coefficient in a
+        # replication.  Re-drawing inside the coefficient loop destroys the
+        # cross-coefficient dependence needed for joint CIs and Romano–Wolf.
+        weights = _draw_weights(method, n_rep_boot, n, rng)
         # scaled_psi = psi / mean(psi_deriv); var_scaling = n * se_rep
         for j in 1:n_coef
             ψ = @view m.psi[:, r, j]
@@ -55,7 +59,6 @@ function bootstrap!(m::AbstractDoubleML; method::AbstractString="normal",
             # and se = sqrt(mean(psi^2)/(J^2 n)) so mean(psi_scaled^2)/n = se^2
             # thus var of boot t is se^2 / se^2 = 1. Good.
             denom = n * se_r
-            weights = _draw_weights(method, n_rep_boot, n, rng)
             boot_t[:, j, r] = weights * (scaled ./ denom)
         end
     end

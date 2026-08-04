@@ -16,7 +16,15 @@ struct DoubleMLCore
     scaled_psi::Array{Float64,3}         # n_obs × n_thetas × n_rep
     is_cluster_data::Bool
     cluster_dict::Union{Nothing,NamedTuple}
+    sample_signature::Union{Nothing,UInt}
 end
+
+# Backward-compatible constructor for callers that construct the internal core
+# directly. Frameworks created from fitted estimators carry a real signature.
+DoubleMLCore(all_thetas, all_ses, var_scaling_factors, scaled_psi,
+             is_cluster_data, cluster_dict) =
+    DoubleMLCore(all_thetas, all_ses, var_scaling_factors, scaled_psi,
+                 is_cluster_data, cluster_dict, nothing)
 
 """
     DoubleMLFramework
@@ -89,6 +97,7 @@ function construct_framework(m::AbstractDoubleML)
 
     core = DoubleMLCore(
         copy(m.all_coef), copy(m.all_se), vsf, scaled, is_cl, cdict,
+        _framework_sample_signature(m),
     )
     names = hasproperty(m, :treat_names) ? m.treat_names : ["theta_$i" for i in 1:n_coef]
     # carry sensitivity building blocks (one SensitivityElements per θ)
@@ -99,6 +108,43 @@ function construct_framework(m::AbstractDoubleML)
         nothing
     end
     return DoubleMLFramework(core; treatment_names=names, sens_elements=selem)
+end
+
+"""Hash the observations and fold assignments represented by a fitted model."""
+function _hash_values(h::UInt, x)
+    x === nothing && return hash(:nothing, h)
+    h = hash(size(x), h)
+    for v in x
+        h = hash(v, h)
+    end
+    return h
+end
+
+function _framework_sample_signature(m::AbstractDoubleML)
+    hasproperty(m, :data) || return nothing
+    data = m.data
+    h = hash(n_obs(data))
+    for x in (data.x, data.y, data.d_mat, data.z, data.s, data.id, data.t,
+              data.score, data.cluster)
+        h = _hash_values(h, x)
+    end
+    if hasproperty(m, :smpls)
+        for rep in m.smpls
+            for fold in rep
+                h = _hash_values(h, fold.train)
+                h = _hash_values(h, fold.test)
+            end
+        end
+    end
+    if hasproperty(m, :smpls_cluster) && m.smpls_cluster !== nothing
+        for rep in m.smpls_cluster
+            for fold in rep
+                h = _hash_values(h, fold.train_ids)
+                h = _hash_values(h, fold.test_ids)
+            end
+        end
+    end
+    return h
 end
 
 """Default var scaling = n_obs for each coefficient (iid)."""
@@ -138,6 +184,10 @@ function _check_compatible_add(a::DoubleMLFramework, b::DoubleMLFramework)
         throw(ArgumentError("var_scaling_factors must match for +/-"))
     ca.is_cluster_data == cb.is_cluster_data ||
         throw(ArgumentError("cluster flags must match for +/-"))
+    ca.sample_signature == cb.sample_signature ||
+        throw(ArgumentError("frameworks must represent the same observations and sample splits"))
+    ca.sample_signature === nothing &&
+        throw(ArgumentError("framework sample metadata is missing; rebuild frameworks from fitted models"))
     return nothing
 end
 
@@ -150,7 +200,7 @@ function Base.:+(a::DoubleMLFramework, b::DoubleMLFramework)
     scaled = ca.scaled_psi .+ cb.scaled_psi
     all_se = _rebuild_all_ses(scaled, ca.var_scaling_factors)
     core = DoubleMLCore(all_θ, all_se, copy(ca.var_scaling_factors), scaled,
-                        ca.is_cluster_data, ca.cluster_dict)
+                        ca.is_cluster_data, ca.cluster_dict, ca.sample_signature)
     names = ["($(a.treatment_names[i])+$(b.treatment_names[i]))" for i in eachindex(a.treatment_names)]
     # arithmetic drops OVB elements (not generally valid under +/−)
     return DoubleMLFramework(core; treatment_names=names, sens_elements=nothing)
@@ -163,7 +213,7 @@ function Base.:-(a::DoubleMLFramework, b::DoubleMLFramework)
     scaled = ca.scaled_psi .- cb.scaled_psi
     all_se = _rebuild_all_ses(scaled, ca.var_scaling_factors)
     core = DoubleMLCore(all_θ, all_se, copy(ca.var_scaling_factors), scaled,
-                        ca.is_cluster_data, ca.cluster_dict)
+                        ca.is_cluster_data, ca.cluster_dict, ca.sample_signature)
     names = ["($(a.treatment_names[i])-$(b.treatment_names[i]))" for i in eachindex(a.treatment_names)]
     return DoubleMLFramework(core; treatment_names=names, sens_elements=nothing)
 end
@@ -174,7 +224,7 @@ function Base.:*(c::Real, a::DoubleMLFramework)
     scaled = c .* ca.scaled_psi
     all_se = abs(c) .* ca.all_ses
     core = DoubleMLCore(all_θ, all_se, copy(ca.var_scaling_factors), scaled,
-                        ca.is_cluster_data, ca.cluster_dict)
+                        ca.is_cluster_data, ca.cluster_dict, ca.sample_signature)
     names = ["$(c)*$(nm)" for nm in a.treatment_names]
     # scaling preserves elements only for c == ±1; drop otherwise
     selem = (abs(abs(c) - 1) < 1e-14) ? a.sens_elements : nothing
@@ -196,13 +246,16 @@ function concat(fs::AbstractVector{<:DoubleMLFramework})
         size(f.core.scaled_psi, 1) == n_obs || throw(DimensionMismatch("n_obs mismatch in concat"))
         size(f.core.scaled_psi, 3) == n_rep || throw(DimensionMismatch("n_rep mismatch in concat"))
     end
+    sigs = [f.core.sample_signature for f in fs]
+    all(s -> s == sigs[1], sigs) && sigs[1] !== nothing ||
+        throw(ArgumentError("frameworks in concat must represent the same observations and sample splits"))
     all_θ = vcat((f.core.all_thetas for f in fs)...)
     all_se = vcat((f.core.all_ses for f in fs)...)
     vsf = vcat((f.core.var_scaling_factors for f in fs)...)
     scaled = cat((f.core.scaled_psi for f in fs)...; dims=2)
     is_cl = any(f.core.is_cluster_data for f in fs)
     cdict = fs[1].core.cluster_dict
-    core = DoubleMLCore(all_θ, all_se, vsf, scaled, is_cl, cdict)
+    core = DoubleMLCore(all_θ, all_se, vsf, scaled, is_cl, cdict, sigs[1])
     names = vcat((f.treatment_names for f in fs)...)
     return DoubleMLFramework(core; treatment_names=names)
 end
@@ -247,15 +300,12 @@ function confint(f::DoubleMLFramework; level::Real=0.95, joint::Bool=false)
     if joint
         f.boot === nothing && error("Apply bootstrap! before confint(joint=true)")
         max_abs = maximum(abs.(f.boot.boot_t_stat); dims=2)
-        crit = [quantile(vec(max_abs[:, 1, r]), level) for r in 1:n_rep]
+        crit = median([quantile(vec(max_abs[:, 1, r]), level) for r in 1:n_rep])
     else
-        z = quantile(Normal(), 1 - (1 - level) / 2)
-        crit = fill(z, n_rep)
+        crit = quantile(Normal(), 1 - (1 - level) / 2)
     end
-    lower_reps = f.core.all_thetas .- f.core.all_ses .* reshape(crit, 1, n_rep)
-    upper_reps = f.core.all_thetas .+ f.core.all_ses .* reshape(crit, 1, n_rep)
-    lower = vec(median(lower_reps; dims=2))
-    upper = vec(median(upper_reps; dims=2))
+    lower = f.thetas .- crit .* f.ses
+    upper = f.thetas .+ crit .* f.ses
     return DataFrame(
         treatment = f.treatment_names,
         lower = lower,

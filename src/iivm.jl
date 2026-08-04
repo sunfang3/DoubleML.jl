@@ -166,12 +166,15 @@ function fit!(m::DoubleMLIIVM; store_predictions::Bool=true,
 
     for rep in 1:n_rep
         folds = m.smpls[rep]
-        g0 = something(_apply_external_pred(external_predictions, "ml_g0", rep, n),
-                       _cross_fit_conditional(ml_g, X, y, z0, folds; classifier=false))
-        g1 = something(_apply_external_pred(external_predictions, "ml_g1", rep, n),
-                       _cross_fit_conditional(ml_g, X, y, z1, folds; classifier=false))
-        m̂ = something(_apply_external_pred(external_predictions, "ml_m", rep, n),
-                       cross_fit_predict(ml_m, X, z, folds; classifier=is_classifier(ml_m)))
+        g0 = _external_or_fit(external_predictions, "ml_g0", rep, n) do
+            _cross_fit_conditional(ml_g, X, y, z0, folds; classifier=false)
+        end
+        g1 = _external_or_fit(external_predictions, "ml_g1", rep, n) do
+            _cross_fit_conditional(ml_g, X, y, z1, folds; classifier=false)
+        end
+        m̂ = _external_or_fit(external_predictions, "ml_m", rep, n) do
+            cross_fit_predict(ml_m, X, z, folds; classifier=is_classifier(ml_m))
+        end
         m̂ = process_propensity(m̂, m.ps_processor)
         # normalize IPW using instrument Z (propensity m = P(Z=1|X))
         if m.normalize_ipw
@@ -180,15 +183,17 @@ function fit!(m::DoubleMLIIVM; store_predictions::Bool=true,
         end
 
         if m.always_takers
-            r0 = something(_apply_external_pred(external_predictions, "ml_r0", rep, n),
-                           _cross_fit_conditional(ml_r, X, d, z0, folds; classifier=is_classifier(ml_r)))
+            r0 = _external_or_fit(external_predictions, "ml_r0", rep, n) do
+                _cross_fit_conditional(ml_r, X, d, z0, folds; classifier=is_classifier(ml_r))
+            end
             r0 = clamp.(r0, 0.0, 1.0)
         else
             r0 = zeros(n)
         end
         if m.never_takers
-            r1 = something(_apply_external_pred(external_predictions, "ml_r1", rep, n),
-                           _cross_fit_conditional(ml_r, X, d, z1, folds; classifier=is_classifier(ml_r)))
+            r1 = _external_or_fit(external_predictions, "ml_r1", rep, n) do
+                _cross_fit_conditional(ml_r, X, d, z1, folds; classifier=is_classifier(ml_r))
+            end
             r1 = clamp.(r1, 0.0, 1.0)
         else
             r1 = ones(n)

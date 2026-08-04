@@ -154,10 +154,12 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true,
             folds = m.smpls[r]
             use_clf_m = is_classifier(ml_m)
 
-            ℓ̂ = something(_apply_external_pred(ext_j, "ml_l", r, n),
-                           cross_fit_predict(ml_l, X, y, folds; classifier=false))
-            m̂ = something(_apply_external_pred(ext_j, "ml_m", r, n),
-                           cross_fit_predict(ml_m, X, d, folds; classifier=use_clf_m))
+            ℓ̂ = _external_or_fit(ext_j, "ml_l", r, n) do
+                cross_fit_predict(ml_l, X, y, folds; classifier=false)
+            end
+            m̂ = _external_or_fit(ext_j, "ml_m", r, n) do
+                cross_fit_predict(ml_m, X, d, folds; classifier=use_clf_m)
+            end
 
             ĝ = nothing
             if is_callable_score(m.score)
@@ -166,8 +168,9 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true,
                     v0 = d .- m̂
                     u0 = y .- ℓ̂
                     θ0 = sum(v0 .* u0) / max(sum(v0 .* v0), eps())
-                    ĝ = something(_apply_external_pred(ext_j, "ml_g", r, n),
-                                   cross_fit_predict(ml_g, X, y .- θ0 .* d, folds; classifier=false))
+                    ĝ = _external_or_fit(ext_j, "ml_g", r, n) do
+                        cross_fit_predict(ml_g, X, y .- θ0 .* d, folds; classifier=false)
+                    end
                     j == 1 && (g_preds[:, r] = ĝ)
                 end
                 preds = (l_hat=ℓ̂, m_hat=m̂, g_hat=ĝ)
@@ -178,8 +181,9 @@ function fit!(m::DoubleMLPLR; store_predictions::Bool=true,
                 v = d .- m̂
                 u = y .- ℓ̂
                 θ0 = sum(v .* u) / sum(v .* v)
-                ĝ = something(_apply_external_pred(ext_j, "ml_g", r, n),
-                               cross_fit_predict(ml_g, X, y .- θ0 .* d, folds; classifier=false))
+                ĝ = _external_or_fit(ext_j, "ml_g", r, n) do
+                    cross_fit_predict(ml_g, X, y .- θ0 .* d, folds; classifier=false)
+                end
                 psi_a = -(d .- m̂) .* d
                 psi_b = (d .- m̂) .* (y .- ĝ)
                 if j == 1

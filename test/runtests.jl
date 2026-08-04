@@ -920,10 +920,12 @@ using Statistics
 
     @testset "Framework construct / algebra / concat" begin
         d1 = make_plr_data(n_obs=500, dim_x=5, theta=0.5; seed=801)
-        d2 = make_plr_data(n_obs=500, dim_x=5, theta=1.0; seed=802)
         m1 = DoubleMLPLR(d1, RidgeLearner(α=1.0), RidgeLearner(α=1.0); n_folds=3, rng=MersenneTwister(801))
-        m2 = DoubleMLPLR(d2, RidgeLearner(α=1.0), RidgeLearner(α=1.0); n_folds=3, rng=MersenneTwister(802))
-        fit!(m1); fit!(m2)
+        fit!(m1)
+        m2 = DoubleMLPLR(d1, RidgeLearner(α=5.0), RidgeLearner(α=5.0);
+                         n_folds=3, draw_sample_splitting=false, rng=MersenneTwister(802))
+        set_sample_splitting!(m2, m1.smpls)
+        fit!(m2)
         f1 = construct_framework(m1)
         f2 = construct_framework(m2)
         @test f1.thetas[1] ≈ m1.coef[1]
@@ -1474,5 +1476,65 @@ using Statistics
         @test multi.fitted
         @test length(multi.coef) >= 1
         @test all(isfinite, multi.coef)
+    end
+
+    @testset "Inference and API regressions" begin
+        # Model-level multiplier bootstrap must reuse one multiplier draw
+        # across coefficients so joint inference preserves covariance.
+        mdata = make_plr_multi_data(n_obs=240, dim_x=4, theta=[0.5, -0.2]; seed=1101)
+        m = DoubleMLPLR(mdata, RidgeLearner(), RidgeLearner();
+                        n_folds=3, rng=MersenneTwister(1101))
+        fit!(m)
+        seed_boot = 1102
+        bootstrap!(m; n_rep_boot=25, rng=MersenneTwister(seed_boot))
+        W = DoubleML._draw_weights("normal", 25, n_obs(mdata), MersenneTwister(seed_boot))
+        for j in 1:2
+            J = mean(m.psi_deriv[:, 1, j])
+            scaled = m.psi[:, 1, j] ./ J
+            expected = W * (scaled ./ (n_obs(mdata) * m.all_se[j, 1]))
+            @test m.boot.boot_t_stat[:, j, 1] ≈ expected
+        end
+
+        # Repeated-split CIs must be centered at the aggregated estimate and
+        # use the aggregated standard error.
+        mr = DoubleMLPLR(make_plr_data(n_obs=240, dim_x=3, theta=0.5; seed=1103),
+                         RidgeLearner(), RidgeLearner();
+                         n_folds=3, n_rep=2, rng=MersenneTwister(1103))
+        fit!(mr)
+        cir = confint(mr)
+        @test (cir.lower[1] + cir.upper[1]) / 2 ≈ mr.coef[1]
+
+        # Direct matrix construction supplies default instrument names and
+        # validates malformed auxiliary vectors.
+        direct = DoubleMLData(randn(20, 2), randn(20), randn(20); z=randn(20))
+        @test direct.z_cols == ["Z1"]
+        @test_throws DimensionMismatch DoubleMLData(randn(20, 2), randn(20), randn(20); z=randn(19))
+
+        # Random-forest min_samples_leaf must affect the fitted forest.
+        Xrf = randn(80, 3)
+        yrf = Xrf[:, 1] .+ randn(80)
+        rf1 = RandomForestRegressorLearner(n_trees=10, min_samples_leaf=1, rng=MersenneTwister(1104))
+        rf2 = RandomForestRegressorLearner(n_trees=10, min_samples_leaf=20, rng=MersenneTwister(1104))
+        fit!(rf1, Xrf, yrf); fit!(rf2, Xrf, yrf)
+        @test maximum(abs.(predict(rf1, Xrf) .- predict(rf2, Xrf))) > 0
+
+        # Clustered models require matching cluster-fold metadata.
+        cdata = make_plr_cluster_data(n_obs=120, n_clusters=20, dim_x=3, theta=0.5; seed=1105)
+        cm = DoubleMLPLR(cdata, RidgeLearner(), RidgeLearner();
+                         n_folds=3, draw_sample_splitting=false, rng=MersenneTwister(1105))
+        ordinary_smpls = DoubleML.make_repeated_folds(120, 3, 1; rng=MersenneTwister(1106))
+        @test_throws ArgumentError set_sample_splitting!(cm, ordinary_smpls)
+        raw_splits = DoubleML.init_sample_splitting(cdata, 3, 1; rng=MersenneTwister(1107))
+        set_sample_splitting!(cm, raw_splits[1], smpls_cluster=raw_splits[2])
+        fit!(cm)
+        @test isfinite(cm.se[1])
+
+        # Framework arithmetic rejects influence functions from different
+        # samples instead of silently treating row positions as matched units.
+        other = DoubleMLPLR(make_plr_data(n_obs=240, dim_x=3, theta=0.5; seed=1108),
+                            RidgeLearner(), RidgeLearner(); n_folds=3,
+                            rng=MersenneTwister(1108))
+        fit!(other)
+        @test_throws ArgumentError (construct_framework(mr) + construct_framework(other))
     end
 end

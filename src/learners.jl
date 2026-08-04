@@ -241,7 +241,8 @@ function fit!(m::RandomForestRegressorLearner, X::AbstractMatrix, y::AbstractVec
     # DecisionTree expects Matrix{Float64} and labels as Vector
     Xf = Matrix{Float64}(X)
     yf = Float64.(y)
-    m.model = build_forest(yf, Xf, -1, m.n_trees, 0.7, m.max_depth;
+    m.model = build_forest(yf, Xf, -1, m.n_trees, 0.7, m.max_depth,
+                           m.min_samples_leaf;
                            rng=m.rng)
     # build_forest for regression: when labels are Float64 it does regression forest
     m.fitted = true
@@ -307,7 +308,8 @@ function fit!(m::RandomForestClassifierLearner, X::AbstractMatrix, y::AbstractVe
     y_int = Int.(round.(y))
     m.classes = sort(unique(y_int))
     n_subfeatures = -1
-    m.model = build_forest(y_int, Xf, n_subfeatures, m.n_trees, 0.7, m.max_depth;
+    m.model = build_forest(y_int, Xf, n_subfeatures, m.n_trees, 0.7, m.max_depth,
+                           m.min_samples_leaf;
                            rng=m.rng)
     m.fitted = true
     return m

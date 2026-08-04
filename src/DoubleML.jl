@@ -63,6 +63,11 @@ export
     DMLDummyClassifier,
     GlobalRegressor,
     GlobalClassifier,
+    MLJLearner,
+    CrossFitPlan,
+    CrossFitResult,
+    NuisanceTask,
+    fit_nuisance,
     fit!,
     predict,
     predict_proba,
@@ -190,6 +195,7 @@ export
 include("learners.jl")
 include("data.jl")
 include("sample_splitting.jl")
+include("estimation_core.jl")
 include("base.jl")       # AbstractDoubleML, confint, summary_table, p_adjust
 include("bootstrap.jl")  # BootstrapResult, bootstrap! (needs AbstractDoubleML)
 include("ps_processor.jl")  # PSProcessor / process_propensity

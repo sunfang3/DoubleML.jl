@@ -13,6 +13,18 @@
 
 abstract type AbstractLearner end
 
+"""MLJ model container; fitting methods are supplied by `DoubleMLMLJExt`."""
+mutable struct MLJLearner <: AbstractLearner
+    model::Any
+    classifier::Bool
+    positive_label::Any
+    machine::Any
+    fitted::Bool
+end
+
+MLJLearner(model; classifier::Bool=false, positive_label=1) =
+    MLJLearner(model, classifier, positive_label, nothing, false)
+
 """Return `true` if the learner is a classifier (uses `predict_proba`)."""
 is_classifier(::AbstractLearner) = false
 is_classifier(x) = false
@@ -429,16 +441,6 @@ Out-of-fold predictions for a learner using precomputed folds.
 """
 function cross_fit_predict(learner, X::AbstractMatrix, y::AbstractVector,
                            folds; classifier::Bool=false)
-    n = size(X, 1)
-    preds = fill(NaN, n)
-    for (train, test) in folds
-        m = clone(learner)
-        fit!(m, X[train, :], y[train])
-        if classifier || is_classifier(m)
-            preds[test] = predict_proba(m, X[test, :])
-        else
-            preds[test] = predict(m, X[test, :])
-        end
-    end
+    preds, _ = _cross_fit_one(learner, X, y, folds; classifier=classifier)
     return preds
 end

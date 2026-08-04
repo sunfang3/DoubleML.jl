@@ -245,21 +245,10 @@ function cross_fit_predict_store(learner, X::AbstractMatrix, y::AbstractVector, 
                                  classifier::Bool=false,
                                  params_factory=nothing,
                                  store_models::Bool=false)
-    n = size(X, 1)
-    preds = fill(NaN, n)
-    models = store_models ? Any[] : nothing
-    for (k, (train, test)) in enumerate(folds)
-        p = params_factory === nothing ? nothing : params_factory(k)
-        mk = p === nothing ? clone(learner) : _clone_with_params(learner, p)
-        fit!(mk, X[train, :], y[train])
-        if classifier || is_classifier(mk)
-            preds[test] = predict_proba(mk, X[test, :])
-        else
-            preds[test] = predict(mk, X[test, :])
-        end
-        store_models && push!(models, mk)
-    end
-    return preds, models
+    return _cross_fit_one(learner, X, y, folds;
+                          classifier=classifier,
+                          params_factory=params_factory,
+                          store_models=store_models)
 end
 
 """Build fold-params factory from model ml_params for one learner/treat/rep."""

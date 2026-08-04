@@ -179,7 +179,7 @@ end
 function _check_compatible_add(a::DoubleMLFramework, b::DoubleMLFramework)
     ca, cb = a.core, b.core
     size(ca.scaled_psi) == size(cb.scaled_psi) ||
-        throw(DimensionMismatch("scaled_psi shapes differ: $(size(ca.scaled_psi)) vs $(size(cb.scaled_psi))"))
+        throw(ArgumentError("scaled_psi shapes differ: $(size(ca.scaled_psi)) vs $(size(cb.scaled_psi))"))
     ca.var_scaling_factors ≈ cb.var_scaling_factors ||
         throw(ArgumentError("var_scaling_factors must match for +/-"))
     ca.is_cluster_data == cb.is_cluster_data ||

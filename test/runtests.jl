@@ -45,6 +45,26 @@ using Statistics
         @test mean((p_hat .> 0.5) .== d) > 0.7
     end
 
+    @testset "Cross-fitting kernel" begin
+        n, p = 120, 4
+        data = DoubleMLData(randn(n, p), randn(n), randn(n))
+        plan = CrossFitPlan(data, 4, 2; rng=MersenneTwister(991))
+        task = NuisanceTask(:ml_y, RidgeLearner(α=0.5), data.y)
+        result = fit_nuisance(plan, task, data.x; store_models=true)
+        @test size(result.predictions) == (n, 2)
+        @test all(isfinite, result.predictions)
+        @test length(result.models) == 2
+        @test all(length.(result.models) .== 4)
+
+        # A task may restrict training rows while preserving held-out rows.
+        arm = Float64.(data.d .> median(data.d))
+        arm_task = NuisanceTask(:ml_arm, RidgeLearner(), data.y;
+                                train_rows=train -> train[arm[train] .== 1])
+        arm_result = fit_nuisance(plan, arm_task, data.x)
+        @test size(arm_result.predictions) == (n, 2)
+        @test all(isfinite, arm_result.predictions)
+    end
+
     @testset "PLR recovers theta" begin
         Random.seed!(3141)
         θ_true = 0.5

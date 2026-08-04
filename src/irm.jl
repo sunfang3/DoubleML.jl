@@ -95,27 +95,24 @@ end
 
 function _cross_fit_g_binary(ml_g, X, y, d, folds; store_models::Bool=false,
                              params_factory=nothing)
-    n = size(X, 1)
-    g0 = fill(NaN, n)
-    g1 = fill(NaN, n)
-    models0 = store_models ? Any[] : nothing
-    models1 = store_models ? Any[] : nothing
-    for (k, (train, test)) in enumerate(folds)
-        tr0 = train[d[train] .== 0]
-        tr1 = train[d[train] .== 1]
-        isempty(tr0) && error("No control units in a training fold")
-        isempty(tr1) && error("No treated units in a training fold")
-        p = params_factory === nothing ? nothing : params_factory(k)
-        m0 = p === nothing ? clone(ml_g) : _clone_with_params(ml_g, p)
-        m1 = p === nothing ? clone(ml_g) : _clone_with_params(ml_g, p)
-        fit!(m0, X[tr0, :], y[tr0])
-        fit!(m1, X[tr1, :], y[tr1])
-        g0[test] = predict(m0, X[test, :])
-        g1[test] = predict(m1, X[test, :])
-        if store_models
-            push!(models0, m0); push!(models1, m1)
-        end
+    tr0 = train -> begin
+        rows = train[d[train] .== 0]
+        isempty(rows) && error("No control units in a training fold")
+        rows
     end
+    tr1 = train -> begin
+        rows = train[d[train] .== 1]
+        isempty(rows) && error("No treated units in a training fold")
+        rows
+    end
+    task0 = NuisanceTask(:ml_g0, ml_g, y; train_rows=tr0)
+    task1 = NuisanceTask(:ml_g1, ml_g, y; train_rows=tr1)
+    g0, models0 = _fit_nuisance_task(task0, X, folds;
+                                     params_factory=params_factory,
+                                     store_models=store_models)
+    g1, models1 = _fit_nuisance_task(task1, X, folds;
+                                     params_factory=params_factory,
+                                     store_models=store_models)
     return g0, g1, models0, models1
 end
 
